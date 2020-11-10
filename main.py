@@ -25,9 +25,9 @@ IM_W = 640
 N = 9 # number of input light field stack
 M = 2 # number of display layers
 
-DATA_FILE = "/home/yejiannan/Project/LightField/data/try"
-DATA_JSON = "/home/yejiannan/Project/LightField/data/data.json"
-OUTPUT_DIR = "/home/yejiannan/Project/LightField/output"
+DATA_FILE = "/home/yejiannan/Project/deeplightfield/data/try"
+DATA_JSON = "/home/yejiannan/Project/deeplightfield/data/data.json"
+OUTPUT_DIR = "/home/yejiannan/Project/deeplightfield/output"
 
 class lightFieldDataLoader(torch.utils.data.dataset.Dataset):
     def __init__(self, file_dir_path, file_json, transforms=None):
