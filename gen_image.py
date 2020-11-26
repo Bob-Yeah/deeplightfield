@@ -1,8 +1,16 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+import glm
 
-def RandomGenSamplesInPupil(conf, n_samples):
+def Fov2Length(angle):
+    '''
+
+    '''
+    return np.tan(angle * np.pi / 360) * 2
+
+
+def RandomGenSamplesInPupil(pupil_size, n_samples):
     '''
     Random sample n_samples positions in pupil region
     
@@ -18,14 +26,14 @@ def RandomGenSamplesInPupil(conf, n_samples):
     samples = torch.empty(n_samples, 2)
     i = 0
     while i < n_samples:
-        s = (torch.rand(2) - 0.5) * conf.pupil_size
-        if np.linalg.norm(s) > conf.pupil_size / 2.:
+        s = (torch.rand(2) - 0.5) * pupil_size
+        if np.linalg.norm(s) > pupil_size / 2.:
             continue
-        samples[i, :] = s
+        samples[i, :] = [ s[0], s[1], 0 ]
         i += 1
     return samples
 
-def GenSamplesInPupil(conf, circles):
+def GenSamplesInPupil(pupil_size, circles):
     '''
     Sample positions on circles in pupil region
     
@@ -38,68 +46,116 @@ def GenSamplesInPupil(conf, circles):
     --------
     a n_samples x 2 tensor with 2D sample position in each row
     '''
-    samples = torch.tensor([[ 0., 0. ]])
+    samples = torch.zeros(1, 3)
     for i in range(1, circles):
-        r = conf.pupil_size / 2. / (circles - 1) * i
+        r = pupil_size / 2. / (circles - 1) * i
         n = 4 * i
         for j in range(0, n):
             angle = 2 * np.pi / n * j
-            samples = torch.cat((samples, torch.tensor([[ r * np.cos(angle), r * np.sin(angle)]])),dim=0)
+            samples = torch.cat([ samples, torch.tensor([[ r * np.cos(angle), r * np.sin(angle), 0 ]]) ], 0)
     return samples
 
-def GenRetinal2LayerMappings(conf, df, v, u):
+class RetinalGen(object):
     '''
-    Generate the mapping matrix from retinal to layers.
+    Class for retinal generation process
     
-    Parameters
+    Properties
     --------
     conf - multi-layers' parameters configuration
-    df   - focal distance
-    v    - a 1 x 2 tensor stores half viewport
-    u    - a M x 2 tensor stores M sample positions on pupil
+    u    - M x 3 tensor, M sample positions in pupil
+    p_r  - H_r x W_r x 3 tensor, retinal pixel grid, [H_r, W_r] is the retinal resolution
+    Phi  - N x H_r x W_r x M x 2 tensor, retinal to layers mapping, N is number of layers
+    mask - N x H_r x W_r x M x 2 tensor, indicates invalid (out-of-range) mapping
     
-    Returns
+    Methods
     --------
-    The mapping matrix
     '''
-    H_r = conf.retinal_res[0]
-    W_r = conf.retinal_res[1]
-    D_r = conf.retinal_res.double()
-    N = conf.n_layers
-    M = u.size()[0] #41
-    Phi = torch.empty(H_r, W_r, N, M, 2, dtype=torch.long)
-    p_rx, p_ry = torch.meshgrid(torch.tensor(range(0, H_r)),
-                                torch.tensor(range(0, W_r)))
-    p_r = torch.stack([p_rx, p_ry], 2).unsqueeze(2).expand(-1, -1, M, -1)
-    # print(p_r.shape) #torch.Size([480, 640, 41, 2])
-    for i in range(0, N):
-        dpi = conf.h_layer[i] / conf.layer_res[0] # 1 / 480
-        ci = conf.layer_res / 2 # [240,320]
-        di = conf.d_layer[i] # 深度
-        pi_r = di * v * (1. / D_r * (p_r + 0.5) - 0.5) / dpi # [480, 640, 41, 2]
-        wi = (1 - di / df) / dpi # (1 - 深度/聚焦) / dpi  df = 2.625 di = 1.75
-        pi = torch.floor(pi_r + ci + wi * u)
-        torch.clamp_(pi[:, :, :, 0], 0, conf.layer_res[0] - 1)
-        torch.clamp_(pi[:, :, :, 1], 0, conf.layer_res[1] - 1)
-        Phi[:, :, i, :, :] = pi
-    return Phi
+    def __init__(self, conf, u):
+        '''
+        Initialize retinal generator instance
 
-def GenRetinalFromLayers(layers, Phi):
-    # layers:  2, color, height, width 
-    # Phi:torch.Size([480, 640, 2, 41, 2])
-    M = Phi.size()[3] # 41
-    N = Phi.size()[2] # 2
-    # print(layers.shape)# torch.Size([2, 3, 480, 640])
-    # print(Phi.shape)# torch.Size([480, 640, 2, 41, 2])
-    # retinal image: 3channels x retinal_size
-    retinal = torch.zeros(3, Phi.size()[0], Phi.size()[1])
-    for j in range(0, M):
-        retinal_view = torch.zeros(3, Phi.size()[0], Phi.size()[1])
-        for i in range(0, N):
-            retinal_view.add_(layers[i,:, Phi[:, :, i, j, 0], Phi[:, :, i, j, 1]])
-        retinal.add_(retinal_view)
-    retinal.div_(M)
-    return retinal
+        Parameters
+        --------
+        conf - multi-layers' parameters configuration
+        u    - a M x 3 tensor stores M sample positions in pupil
+        '''
+        self.conf = conf
+        # self.u = u.to(cuda_dev)
+        self.u = u # M x 3 M sample positions 
+        self.D_r = conf.retinal_res # retinal res 480 x 640 
+        self.N = conf.GetNLayers() # 2 
+        self.M = u.size()[0] # samples
+        p_rx, p_ry = torch.meshgrid(torch.tensor(range(0, self.D_r[0])),
+                                    torch.tensor(range(0, self.D_r[1])))
+        self.p_r = torch.cat([
+            ((torch.stack([p_rx, p_ry], 2) + 0.5) / self.D_r - 0.5) * conf.GetEyeViewportSize(), # 眼球视野
+            torch.ones(self.D_r[0], self.D_r[1], 1)
+        ], 2)
 
+        # self.Phi = torch.empty(N, D_r[0], D_r[1], M, 2, device=cuda_dev, dtype=torch.long)
+        # self.mask = torch.empty(self.N, self.D_r[0], self.D_r[1], self.M, 2, dtype=torch.float) # 2 x 480 x 640 x 41 x 2
+        
+    def CalculateRetinal2LayerMappings(self, df, gaze):
+        '''
+        Calculate the mapping matrix from retinal to layers.
 
+        Parameters
+        --------
+        df   - focus distance
+        gaze - 2 x 1 tensor, eye rotation angle (degs) in horizontal and vertical direction
+
+        '''
+        Phi = torch.empty(self.N, self.D_r[0], self.D_r[1], self.M, 2, dtype=torch.long) # 2 x 480 x 640 x 41 x 2
+        mask = torch.empty(self.N, self.D_r[0], self.D_r[1], self.M, 2, dtype=torch.float)
+        D_r = self.conf.retinal_res        # D_r: Resolution of retinal 480 640
+        V = self.conf.GetEyeViewportSize() # V: Viewport size of eye 
+        c = (self.conf.layer_res / 2)      # c: Center of layers (pixel)
+        p_f = self.p_r * df                # p_f: H x W x 3, focus positions of retinal pixels on focus plane
+        rot_forward = glm.dvec3(glm.tan(glm.radians(glm.dvec2(gaze[1], -gaze[0]))), 1)
+        rot_mat = torch.from_numpy(np.array(
+            glm.dmat3(glm.lookAtLH(glm.dvec3(), rot_forward, glm.dvec3(0, 1, 0)))))
+        rot_mat = rot_mat.float()
+        u_rot = torch.mm(self.u, rot_mat)
+        v_rot = torch.matmul(p_f, rot_mat).unsqueeze(2).expand(
+            -1, -1, self.u.size()[0], -1) - u_rot # v_rot: H x W x M x 3, rotated rays' direction vector
+        v_rot.div_(v_rot[:, :, :, 2].unsqueeze(3))             # make z = 1 for each direction vector in v_rot
+        
+        for i in range(0, self.conf.GetNLayers()):
+            dp_i = self.conf.GetLayerSize(i)[0] / self.conf.layer_res[0] # dp_i: Pixel size of layer i
+            d_i = self.conf.d_layer[i]                                        # d_i: Distance of layer i
+            k = (d_i - u_rot[:, 2]).unsqueeze(1)
+            pi_r = (u_rot[:, 0:2] + v_rot[:, :, :, 0:2] * k) / dp_i      # pi_r: H x W x M x 2, rays' pixel coord on layer i
+            Phi[i, :, :, :, :] = torch.floor(pi_r + c)
+        mask[:, :, :, :, 0] = ((Phi[:, :, :, :, 0] >= 0) & (Phi[:, :, :, :, 0] < self.conf.layer_res[0])).float()
+        mask[:, :, :, :, 1] = ((Phi[:, :, :, :, 1] >= 0) & (Phi[:, :, :, :, 1] < self.conf.layer_res[1])).float()
+        Phi[:, :, :, :, 0].clamp_(0, self.conf.layer_res[0] - 1)
+        Phi[:, :, :, :, 1].clamp_(0, self.conf.layer_res[1] - 1)
+        retinal_mask = mask.prod(0).prod(2).prod(2)
+        return [ Phi, retinal_mask ]
     
+    def GenRetinalFromLayers(self, layers, Phi):
+        '''
+        Generate retinal image from layers, using precalculated mapping matrix
+        
+        Parameters
+        --------
+        layers - 3N x H_l x W_l tensor, stacked layer images, with 3 channels in each layer
+        
+        Returns
+        --------
+        3 x H_r x W_r tensor, 3 channels retinal image
+        H_r x W_r tensor, retinal image mask, indicates pixels valid or not
+        
+        '''
+        # FOR GRAYSCALE 1 FOR RGB 3
+        mapped_layers = torch.empty(self.N, 3, self.D_r[0], self.D_r[1], self.M) # 2 x 3 x 480 x 640 x 41
+        # print("mapped_layers:",mapped_layers.shape)
+        for i in range(0, Phi.size()[0]):
+            # print("gather layers:",layers[(i * 3) : (i * 3 + 3),Phi[i, :, :, :, 0],Phi[i, :, :, :, 1]].shape)
+            mapped_layers[i, :, :, :, :] = layers[(i * 3) : (i * 3 + 3),
+                                                    Phi[i, :, :, :, 0],
+                                                    Phi[i, :, :, :, 1]]
+        # print("mapped_layers:",mapped_layers.shape)
+        retinal = mapped_layers.prod(0).sum(3).div(Phi.size()[3])
+        # print("retinal:",retinal.shape)
+        return retinal
