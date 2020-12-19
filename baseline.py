@@ -38,7 +38,7 @@ class residual_block(torch.nn.Module):
     def forward(self,input):
         if self.RNN:
             # print("input:",input.shape,"hidden:",self.hidden.shape)
-            inp = torch.cat((input,self.hidden),dim=1)
+            inp = torch.cat((input,self.hidden.detach()),dim=1)
             # print(inp.shape)
             output = self.layer1(inp)
             output = self.layer2(output)
@@ -97,7 +97,7 @@ class interleave(torch.nn.Module):
         return output
 
 class model(torch.nn.Module):
-    def __init__(self,FIRSST_LAYER_CHANNELS,LAST_LAYER_CHANNELS,OUT_CHANNELS_RB,KERNEL_SIZE,KERNEL_SIZE_RB,INTERLEAVE_RATE):
+    def __init__(self,FIRSST_LAYER_CHANNELS,LAST_LAYER_CHANNELS,OUT_CHANNELS_RB,KERNEL_SIZE,KERNEL_SIZE_RB,INTERLEAVE_RATE,RNN=False):
         super(model, self).__init__()
         self.interleave = interleave(INTERLEAVE_RATE)
 
@@ -108,13 +108,19 @@ class model(torch.nn.Module):
         )
         
         self.residual_block1 = residual_block(OUT_CHANNELS_RB,0,KERNEL_SIZE_RB,False)
-        self.residual_block2 = residual_block(OUT_CHANNELS_RB,3,KERNEL_SIZE_RB,False)
-        self.residual_block3 = residual_block(OUT_CHANNELS_RB,3,KERNEL_SIZE_RB,True)
-        self.residual_block4 = residual_block(OUT_CHANNELS_RB,3,KERNEL_SIZE_RB,True)
-        self.residual_block5 = residual_block(OUT_CHANNELS_RB,3,KERNEL_SIZE_RB,True)
+        self.residual_block2 = residual_block(OUT_CHANNELS_RB,2,KERNEL_SIZE_RB,False)
+        self.residual_block3 = residual_block(OUT_CHANNELS_RB,2,KERNEL_SIZE_RB,False)
+        # if RNN:
+        #     self.residual_block3 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,True)
+        #     self.residual_block4 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,True)
+        #     self.residual_block5 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,True)
+        # else:
+        #     self.residual_block3 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,False)
+        #     self.residual_block4 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,False)
+        #     self.residual_block5 = residual_block(OUT_CHANNELS_RB,6,KERNEL_SIZE_RB,False)
 
         self.output_layer = torch.nn.Sequential(
-            torch.nn.Conv2d(OUT_CHANNELS_RB+3,LAST_LAYER_CHANNELS,KERNEL_SIZE,stride=1,padding=1),
+            torch.nn.Conv2d(OUT_CHANNELS_RB+2,LAST_LAYER_CHANNELS,KERNEL_SIZE,stride=1,padding=1),
             torch.nn.BatchNorm2d(LAST_LAYER_CHANNELS),
             torch.nn.Sigmoid()
         )
@@ -125,7 +131,7 @@ class model(torch.nn.Module):
         self.residual_block4.reset_hidden(inp)
         self.residual_block5.reset_hidden(inp)
 
-    def forward(self, lightfield_images, focal_length, gazeX, gazeY):
+    def forward(self, lightfield_images, pos_row, pos_col):
         # lightfield_images: torch.Size([batch_size, channels * D, H, W]) 
         # channels : RGB*D: 3*9, H:256, W:256
         # print("lightfield_images:",lightfield_images.shape)
@@ -136,32 +142,18 @@ class model(torch.nn.Module):
         # print("input_to_rb1:",input_to_rb.shape)
         output = self.residual_block1(input_to_rb)
 
-        depth_layer = torch.ones((input_to_rb.shape[0],1,input_to_rb.shape[2],input_to_rb.shape[3]))
-        gazeX_layer = torch.ones((input_to_rb.shape[0],1,input_to_rb.shape[2],input_to_rb.shape[3]))
-        gazeY_layer = torch.ones((input_to_rb.shape[0],1,input_to_rb.shape[2],input_to_rb.shape[3]))
-        # print("depth_layer:",depth_layer.shape)
-        # print("focal_depth:",focal_length," gazeX:",gazeX," gazeY:",gazeY, " gazeX norm:",(gazeX[0] - (-3.333)) / (3.333*2))
-        for i in range(focal_length.shape[0]):
-            depth_layer[i] *= 1. / focal_length[i]
-            gazeX_layer[i] *= (gazeX[i] - (-3.333)) / (3.333*2)
-            gazeY_layer[i] *= (gazeY[i] - (-3.333)) / (3.333*2)
+        pos_row_layer = torch.ones((input_to_rb.shape[0],1,input_to_rb.shape[2],input_to_rb.shape[3]))
+        pos_col_layer = torch.ones((input_to_rb.shape[0],1,input_to_rb.shape[2],input_to_rb.shape[3]))
+        for i in range(pos_row.shape[0]):
+            pos_row_layer[i] *= pos_row[i]
+            pos_col_layer[i] *= pos_col[i]
             # print(depth_layer.shape)
-        depth_layer = var_or_cuda(depth_layer)
-        gazeX_layer = var_or_cuda(gazeX_layer)
-        gazeY_layer = var_or_cuda(gazeY_layer)
+        pos_row_layer = var_or_cuda(pos_row_layer)
+        pos_col_layer = var_or_cuda(pos_col_layer)
 
-        output = torch.cat((output,depth_layer,gazeX_layer,gazeY_layer),dim=1)
-        # output = torch.cat((output,depth_layer),dim=1)
-        # print("output to rb2:",output.shape)
-
+        output = torch.cat((output,pos_row_layer,pos_col_layer),dim=1)
         output = self.residual_block2(output)
-        # print("output to rb3:",output.shape)
         output = self.residual_block3(output)
-        # print("output to rb4:",output.shape)
-        output = self.residual_block4(output)
-        # print("output to rb5:",output.shape)
-        output = self.residual_block5(output)
-        # output = output + input_to_net
         output = self.output_layer(output)
         output = self.deinterleave(output)
         return output

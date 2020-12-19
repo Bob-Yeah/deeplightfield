@@ -31,7 +31,7 @@ M = 1 # number of display layers
 DATA_FILE = "/home/yejiannan/Project/LightField/data/lf_syn"
 DATA_JSON = "/home/yejiannan/Project/LightField/data/data_lf_syn_full.json"
 # DATA_VAL_JSON = "/home/yejiannan/Project/LightField/data/data_gaze_fovea_val.json"
-OUTPUT_DIR = "/home/yejiannan/Project/LightField/outputE/lf_syn_full_perc"
+OUTPUT_DIR = "/home/yejiannan/Project/LightField/outputE/lf_syn_full"
 OUT_CHANNELS_RB = 128
 KERNEL_SIZE_RB = 3
 KERNEL_SIZE = 3
@@ -50,7 +50,7 @@ def save_checkpoints(file_path, epoch_idx, model, model_solver):
     torch.save(checkpoint, file_path)
 
 mode = "Silence" #"Perf"
-w_frame = 0.9
+w_frame = 1.0
 loss1 = PerceptionReconstructionLoss()
 if __name__ == "__main__":
     #train
@@ -70,7 +70,7 @@ if __name__ == "__main__":
 
     if torch.cuda.is_available():
         # lf_model = torch.nn.DataParallel(lf_model).cuda()
-        lf_model = lf_model.to('cuda:3')
+        lf_model = lf_model.to('cuda:1')
     
     optimizer = torch.optim.Adam(lf_model.parameters(),lr=5e-3,betas=(0.9,0.999))
     
