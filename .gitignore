@@ -110,6 +110,7 @@ ENV/
 
 # Output
 output/
+outputE/
 
 # Data
 data/
