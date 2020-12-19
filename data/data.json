@@ -1,10 +1,10 @@
 {
     "focaldepth": [
             1.0,
-            1.25,
+            1.2,
             1.5,
-            1.75,
-            2.0
+            2.0,
+            3.0
     ],
     "train":[
         "Stanford_3x3x640p_l0.png",
@@ -15,9 +15,9 @@
     ],
     "gt":[
         "_retinal_1.00.png",
-        "_retinal_1.25.png",
+        "_retinal_1.20.png",
         "_retinal_1.50.png",
-        "_retinal_1.75.png",
-        "_retinal_2.00.png"
+        "_retinal_2.00.png",
+        "_retinal_3.00.png"
     ]
 }
