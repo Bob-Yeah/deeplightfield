@@ -58,7 +58,7 @@ def train():
     # 3. Train
     model.train()
     epoch = EPOCH_BEGIN
-    iters = EPOCH_BEGIN * len(train_data_loader)
+    iters = EPOCH_BEGIN * len(train_data_loader) * BATCH_SIZE
 
     util.CreateDirIfNeed(RUN_DIR)
 
