@@ -3,8 +3,7 @@ import torch
 import torch.nn as nn
 from .pytorch_prototyping.pytorch_prototyping import *
 from .my import util
-
-device = torch.device("cuda:2")
+from .my import device
 
 
 class Encoder(nn.Module):
@@ -66,15 +65,15 @@ class LatentSpaceTransformer(nn.Module):
         self.n_views = view_positions.size()[0]
         self.diopter_of_layers = diopter_of_layers
         self.feat_coords = util.MeshGrid(
-            (feat_dim, feat_dim)).to(device=device)
+            (feat_dim, feat_dim)).to(device.GetDevice())
 
     def forward(self, feats: torch.Tensor,
                 feat_depths: torch.Tensor,
                 novel_views: torch.Tensor) -> torch.Tensor:
-        trans_feats = torch.zeros(novel_views.size()[0], feats.size()[0],
-                                  feats.size()[1], feats.size()[
-            2], feats.size()[3],
-            device=device)
+        trans_feats = torch.zeros(novel_views.size()[0],
+                                  feats.size()[0], feats.size()[1],
+                                  feats.size()[2], feats.size()[3],
+                                  device=device.GetDevice())
         for i in range(novel_views.size()[0]):
             for v in range(self.n_views):
                 for l in range(len(self.diopter_of_layers)):
@@ -151,8 +150,8 @@ class TransUnet(nn.Module):
         latent_sidelength = 64  # The dimensions of the latent space
         image_sidelength = view_images.size()[2]
 
-        self.view_images = view_images.to(device)
-        self.view_depths = view_depths.to(device)
+        self.view_images = view_images.to(device.GetDevice())
+        self.view_depths = view_depths.to(device.GetDevice())
         self.n_views = view_images.size()[0]
         self.encoder = Encoder(nf0=nf0,
                                out_channels=nf,

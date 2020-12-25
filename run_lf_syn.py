@@ -10,21 +10,24 @@ from tensorboardX import SummaryWriter
 from .loss.loss import PerceptionReconstructionLoss
 from .my import netio
 from .my import util
+from .my import device
 from .my.simple_perf import SimplePerf
 from .data.lf_syn import LightFieldSynDataset
 from .trans_unet import TransUnet
 
 
-device = torch.device("cuda:2")
+torch.cuda.set_device(2)
+print("Set CUDA:%d as current device." % torch.cuda.current_device())
+
 DATA_DIR = os.path.dirname(__file__) + '/data/lf_syn_2020.12.23'
 TRAIN_DATA_DESC_FILE = DATA_DIR + '/train.json'
-OUTPUT_DIR = DATA_DIR + '/output_low_lr'
-RUN_DIR = DATA_DIR + '/run_low_lr'
-BATCH_SIZE = 1
+OUTPUT_DIR = DATA_DIR + '/output_bat2'
+RUN_DIR = DATA_DIR + '/run_bat2'
+BATCH_SIZE = 8
 TEST_BATCH_SIZE = 10
 NUM_EPOCH = 1000
 MODE = "Silence"  # "Perf"
-EPOCH_BEGIN = 500
+EPOCH_BEGIN = 0
 
 
 def train():
@@ -44,7 +47,7 @@ def train():
                       view_images=train_dataset.sparse_view_images,
                       view_depths=train_dataset.sparse_view_depths,
                       view_positions=train_dataset.sparse_view_positions,
-                      diopter_of_layers=train_dataset.diopter_of_layers).to(device)
+                      diopter_of_layers=train_dataset.diopter_of_layers).to(device.GetDevice())
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     loss = PerceptionReconstructionLoss()
 
@@ -66,7 +69,7 @@ def train():
     for epoch in range(EPOCH_BEGIN, NUM_EPOCH):
         for _, view_images, _, view_positions in train_data_loader:
 
-            view_images = view_images.to(device)
+            view_images = view_images.to(device.GetDevice())
 
             perf.Checkpoint("Load")
 
@@ -106,7 +109,6 @@ def train():
                           solver=optimizer)
 
     print("Train finished")
-    netio.SaveNet('%s/model-epoch_%d.pth' % (RUN_DIR, epoch + 1), model)
 
 
 def test(net_file: str):
@@ -125,7 +127,7 @@ def test(net_file: str):
                       view_images=train_dataset.sparse_view_images,
                       view_depths=train_dataset.sparse_view_depths,
                       view_positions=train_dataset.sparse_view_positions,
-                      diopter_of_layers=train_dataset.diopter_of_layers).to(device)
+                      diopter_of_layers=train_dataset.diopter_of_layers).to(device.GetDevice())
     netio.LoadNet(net_file, model)
 
     # 3. Test on train dataset
@@ -142,5 +144,5 @@ def test(net_file: str):
 
 
 if __name__ == "__main__":
-    #train()
-    test(RUN_DIR + '/model-epoch_1000.pth')
+    train()
+    #test(RUN_DIR + '/model-epoch_1000.pth')
