@@ -11,13 +11,13 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 
 import cv2
-from gen_image import *
-from loss import *
+from .gen_image import *
+from .loss import *
 import json
-from conf import Conf
+from .conf import Conf
 
-from baseline import *
-from data import * 
+from .baseline import *
+from .data import * 
 
 import torch.autograd.profiler as profiler
 # param

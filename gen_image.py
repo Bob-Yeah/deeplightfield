@@ -3,52 +3,8 @@ import numpy as np
 import torch
 import glm
 import time
-import util
-
-def RandomGenSamplesInPupil(pupil_size, n_samples):
-    '''
-    Random sample n_samples positions in pupil region
-    
-    Parameters
-    --------
-    conf      - multi-layers' parameters configuration
-    n_samples - number of samples to generate
-    
-    Returns
-    --------
-    a n_samples x 3 tensor with 3D sample position in each row
-    '''
-    samples = torch.empty(n_samples, 3)
-    i = 0
-    while i < n_samples:
-        s = (torch.rand(2) - 0.5) * pupil_size
-        if np.linalg.norm(s) > pupil_size / 2.:
-            continue
-        samples[i, :] = [ s[0], s[1], 0 ]
-        i += 1
-    return samples
-
-def GenSamplesInPupil(pupil_size, circles):
-    '''
-    Sample positions on circles in pupil region
-    
-    Parameters
-    --------
-    conf      - multi-layers' parameters configuration
-    circles   - number of circles to sample
-    
-    Returns
-    --------
-    a n_samples x 3 tensor with 3D sample position in each row
-    '''
-    samples = torch.zeros(1, 3)
-    for i in range(1, circles):
-        r = pupil_size / 2. / (circles - 1) * i
-        n = 4 * i
-        for j in range(0, n):
-            angle = 2 * np.pi / n * j
-            samples = torch.cat([ samples, torch.tensor([[ r * np.cos(angle), r * np.sin(angle), 0 ]]) ], 0)
-    return samples
+from .my import util
+from .my import sample_in_pupil
 
 class RetinalGen(object):
     '''
@@ -75,7 +31,7 @@ class RetinalGen(object):
         u    - a M x 3 tensor stores M sample positions in pupil
         '''
         self.conf = conf
-        self.u = GenSamplesInPupil(conf.pupil_size, 5)
+        self.u = sample_in_pupil.CircleGen(conf.pupil_size, 5)
         # self.u = u.to(cuda_dev)
         # self.u = u # M x 3 M sample positions 
         self.D_r = conf.retinal_res # retinal res 480 x 640 
