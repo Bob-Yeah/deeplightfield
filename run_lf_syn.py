@@ -27,7 +27,7 @@ BATCH_SIZE = 8
 TEST_BATCH_SIZE = 10
 NUM_EPOCH = 1000
 MODE = "Silence"  # "Perf"
-EPOCH_BEGIN = 0
+EPOCH_BEGIN = 600
 
 
 def train():
@@ -58,7 +58,7 @@ def train():
     # 3. Train
     model.train()
     epoch = EPOCH_BEGIN
-    iters = EPOCH_BEGIN * len(train_data_loader)
+    iters = EPOCH_BEGIN * len(train_data_loader) * BATCH_SIZE
 
     util.CreateDirIfNeed(RUN_DIR)
 
