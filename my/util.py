@@ -1,4 +1,5 @@
-from typing import Tuple
+from typing import List, Tuple
+from math import pi
 import numpy as np
 import torch
 import torchvision
@@ -150,3 +151,61 @@ def MeshGrid(size: Tuple[int, int], normalize: bool = False, swap_dim: bool = Fa
 def CreateDirIfNeed(path):
     if not os.path.exists(path):
         os.makedirs(path)
+
+
+def GetLocalViewRays(cam_params, res: Tuple[int, int], flatten=False) -> torch.Tensor:
+    coords = MeshGrid(res)
+    c = torch.tensor([cam_params['cx'], cam_params['cy']])
+    f = torch.tensor([cam_params['fx'], cam_params['fy']])
+    rays = torch.cat([
+        (coords - c) / f,
+        torch.ones(res[0], res[1], 1, )
+    ], dim=2)
+    if flatten:
+        rays = rays.flatten(0, 1)
+    return rays
+
+
+def CartesianToSpherical(cart: torch.Tensor) -> torch.Tensor:
+    """
+    Convert coordinates from Cartesian to Spherical
+
+    :param cart: ... x 3, coordinates in Cartesian
+    :return: ... x 3, coordinates in Spherical (r, theta, phi)
+    """
+    rho = torch.norm(cart, p=2, dim=-1)
+    theta = torch.atan2(cart[..., 2], cart[..., 0])
+    theta = theta + (theta < 0).type_as(theta) * (2 * pi)
+    phi = torch.acos(cart[..., 1] / rho)
+    return torch.stack([rho, theta, phi], dim=-1)
+
+
+def SphericalToCartesian(spher: torch.Tensor) -> torch.Tensor:
+    """
+    Convert coordinates from Spherical to Cartesian
+
+    :param spher: ... x 3, coordinates in Spherical
+    :return: ... x 3, coordinates in Cartesian (r, theta, phi)
+    """
+    rho = spher[..., 0]
+    sin_theta_phi = torch.sin(spher[..., 1:3])
+    cos_theta_phi = torch.cos(spher[..., 1:3])
+    x = rho * cos_theta_phi[..., 0] * sin_theta_phi[..., 1]
+    y = rho * cos_theta_phi[..., 1]
+    z = rho * sin_theta_phi[..., 0] * sin_theta_phi[..., 1]
+    return torch.stack([x, y, z], dim=-1)
+
+
+def GetDepthLayers(depth_range: Tuple[float, float], n_layers: int) -> List[float]:
+    """
+    Get [n_layers] foreground layers whose diopters are distributed uniformly
+    in  [depth_range] plus a background layer
+
+    :param depth_range: depth range of foreground layers
+    :param n_layers: number of foreground layers
+    :return: list of [n_layers+1] depths
+    """
+    diopter_range = (1 / depth_range[1], 1 / depth_range[0])
+    depths = [1e5]  # Background layer
+    depths += list(1.0 / np.linspace(diopter_range[0], diopter_range[1], n_layers))
+    return depths

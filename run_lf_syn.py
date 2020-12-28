@@ -144,5 +144,5 @@ def test(net_file: str):
 
 
 if __name__ == "__main__":
-    train()
-    #test(RUN_DIR + '/model-epoch_1000.pth')
+    #train()
+    test(RUN_DIR + '/model-epoch_1000.pth')

@@ -6,6 +6,7 @@ class SimplePerf(object):
     def __init__(self, enable, start = False) -> None:
         super().__init__()
         self.enable = enable
+        self.start_event = None
         if start:
             self.Start()
     
@@ -23,6 +24,6 @@ class SimplePerf(object):
             return
         self.end_event.record()
         torch.cuda.synchronize()
-        print(name, ': ', self.start_event.elapsed_time(self.end_event))
+        print('%s: %.1fms' % (name, self.start_event.elapsed_time(self.end_event)))
         if not end:
             self.start_event.record()
