@@ -1,45 +1,8 @@
-from typing import List, Tuple
-from math import pi
+from typing import Tuple
 import torch
 import torch.nn as nn
-from .pytorch_prototyping.pytorch_prototyping import *
 from .my import net_modules
 from .my import util
-from .my import device
-
-
-def RaySphereIntersect(p: torch.Tensor, v: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-    """
-    Calculate intersections of each rays and each spheres
-
-    :param p: B x 3, positions of rays
-    :param v: B x 3, directions of rays
-    :param r: B'(1D), radius of spheres
-    :return: B x B' x 3, points of intersection
-    """
-    # p, v: Expand to B x 1 x 3
-    p = p.unsqueeze(1)
-    v = v.unsqueeze(1)
-    # pp, vv, pv: B x 1
-    pp = (p * p).sum(dim=2)
-    vv = (v * v).sum(dim=2)
-    pv = (p * v).sum(dim=2)
-    # k: Expand to B x B' x 1
-    k = (((pv * pv - vv * (pp - r * r)).sqrt() - pv) / vv).unsqueeze(2)
-    return p + k * v
-
-
-def RayToSpherical(p: torch.Tensor, v: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
-    """
-    Calculate intersections of each rays and each spheres
-
-    :param p: B x 3, positions of rays
-    :param v: B x 3, directions of rays
-    :param r: B' x 1, radius of spheres
-    :return: B x B' x 3, spherical coordinates
-    """
-    p_on_spheres = RaySphereIntersect(p, v, r)
-    return util.CartesianToSpherical(p_on_spheres)
 
 
 class SpherNet(nn.Module):

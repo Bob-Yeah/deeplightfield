@@ -1,19 +1,18 @@
 import sys
-sys.path.append('/e/dengnc')
+import os
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
 __package__ = "deeplightfield"
 
 import argparse
 import torch
 import torch.optim
 import torchvision
-from typing import List, Tuple
 from tensorboardX import SummaryWriter
 from torch import nn
 from .my import netio
 from .my import util
 from .my import device
 from .my.simple_perf import SimplePerf
-from .loss.loss import PerceptionReconstructionLoss
 from .data.spherical_view_syn import SphericalViewSynDataset
 from .msl_net import MslNet
 from .spher_net import SpherNet
@@ -36,9 +35,9 @@ TRAIN_MODE = True
 EVAL_TIME_PERFORMANCE = False
 RAY_AS_ITEM = True
 # ========
-#GRAY = True
-ROT_ONLY = True
-TRAIN_MODE = False
+GRAY = True
+#ROT_ONLY = True
+#TRAIN_MODE = False
 #EVAL_TIME_PERFORMANCE = True
 #RAY_AS_ITEM = False
 
@@ -48,39 +47,39 @@ N_DEPTH_LAYERS = 10
 N_ENCODE_DIM = 10
 FC_PARAMS = {
     'nf': 128,
-    'n_layers': 6,
+    'n_layers': 8,
     'skips': [4]
 }
 
 # Train
+TRAIN_DATA_DESC_FILE = 'train.json'
 BATCH_SIZE = 2048 if RAY_AS_ITEM else 4
 EPOCH_RANGE = range(0, 500)
 SAVE_INTERVAL = 20
 
+# Test
+TEST_NET_NAME = 'model-epoch_500'
+TEST_DATA_DESC_FILE = 'test_fovea.json'
+TEST_BATCH_SIZE = 5
+
 # Paths
-DATA_DIR = sys.path[0] + '/data/sp_view_syn_2020.12.26_rotonly/'
+DATA_DIR = sys.path[0] + '/data/sp_view_syn_2020.12.28/'
 RUN_ID = '%s_ray_b%d_encode%d_fc%dx%d%s' % ('gray' if GRAY else 'rgb',
                                             BATCH_SIZE,
                                             N_ENCODE_DIM,
                                             FC_PARAMS['nf'],
                                             FC_PARAMS['n_layers'],
                                             '_skip_%d' % FC_PARAMS['skips'][0] if len(FC_PARAMS['skips']) > 0 else '')
-TRAIN_DATA_DESC_FILE = DATA_DIR + 'train.json'
 RUN_DIR = DATA_DIR + RUN_ID + '/'
 OUTPUT_DIR = RUN_DIR + 'output/'
 LOG_DIR = RUN_DIR + 'log/'
 
 
-# Test
-TEST_NET_NAME = 'model-epoch_100'
-TEST_BATCH_SIZE = 5
-
-
 def train():
     # 1. Initialize data loader
-    print("Load dataset: " + TRAIN_DATA_DESC_FILE)
-    train_dataset = SphericalViewSynDataset(
-        TRAIN_DATA_DESC_FILE, gray=GRAY, ray_as_item=RAY_AS_ITEM)
+    print("Load dataset: " + DATA_DIR + TRAIN_DATA_DESC_FILE)
+    train_dataset = SphericalViewSynDataset(DATA_DIR + TRAIN_DATA_DESC_FILE,
+                                            gray=GRAY, ray_as_item=RAY_AS_ITEM)
     train_data_loader = torch.utils.data.DataLoader(
         dataset=train_dataset,
         batch_size=BATCH_SIZE,
@@ -98,10 +97,12 @@ def train():
                          encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
     else:
         model = MslNet(cam_params=train_dataset.cam_params,
+                       fc_params=FC_PARAMS,
                        sphere_layers=util.GetDepthLayers(
                            DEPTH_RANGE, N_DEPTH_LAYERS),
                        out_res=train_dataset.view_res,
-                       gray=GRAY).to(device.GetDevice())
+                       gray=GRAY,
+                       encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
     loss = nn.MSELoss()
 
@@ -172,11 +173,11 @@ def train():
 
 def test(net_file: str):
     # 1. Load train dataset
-    print("Load dataset: " + TRAIN_DATA_DESC_FILE)
-    train_dataset = SphericalViewSynDataset(TRAIN_DATA_DESC_FILE,
-                                            load_images=True, gray=GRAY)
-    train_data_loader = torch.utils.data.DataLoader(
-        dataset=train_dataset,
+    print("Load dataset: " + DATA_DIR + TEST_DATA_DESC_FILE)
+    test_dataset = SphericalViewSynDataset(DATA_DIR + TEST_DATA_DESC_FILE,
+                                           load_images=True, gray=GRAY)
+    test_data_loader = torch.utils.data.DataLoader(
+        dataset=test_dataset,
         batch_size=TEST_BATCH_SIZE,
         pin_memory=True,
         shuffle=False,
@@ -184,37 +185,38 @@ def test(net_file: str):
 
     # 2. Load trained model
     if ROT_ONLY:
-        model = SpherNet(cam_params=train_dataset.cam_params,
+        model = SpherNet(cam_params=test_dataset.cam_params,
                          fc_params=FC_PARAMS,
-                         out_res=train_dataset.view_res,
+                         out_res=test_dataset.view_res,
                          gray=GRAY,
                          encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
     else:
-        model = MslNet(cam_params=train_dataset.cam_params,
-                       sphere_layers=_GetSphereLayers(
+        model = MslNet(cam_params=test_dataset.cam_params,
+                       sphere_layers=util.GetDepthLayers(
                            DEPTH_RANGE, N_DEPTH_LAYERS),
-                       out_res=train_dataset.view_res,
+                       out_res=test_dataset.view_res,
                        gray=GRAY).to(device.GetDevice())
     netio.LoadNet(net_file, model)
 
     # 3. Test on train dataset
     print("Begin test on train dataset, batch size is %d" % TEST_BATCH_SIZE)
-    util.CreateDirIfNeed(OUTPUT_DIR)
-    util.CreateDirIfNeed(OUTPUT_DIR + TEST_NET_NAME)
+    output_dir = '%s%s/%s/' % (OUTPUT_DIR, TEST_NET_NAME, TEST_DATA_DESC_FILE)
+    util.CreateDirIfNeed(output_dir)
     perf = SimplePerf(True, start=True)
     i = 0
-    for view_idxs, view_images, ray_positions, ray_directions in train_data_loader:
+    for view_idxs, view_images, ray_positions, ray_directions in test_data_loader:
         ray_positions = ray_positions.to(device.GetDevice())
         ray_directions = ray_directions.to(device.GetDevice())
         perf.Checkpoint("%d - Load" % i)
         out_view_images = model(ray_positions, ray_directions)
         perf.Checkpoint("%d - Infer" % i)
-        util.WriteImageTensor(
-            view_images,
-            ['%s%s/gt_view_%04d.png' % (OUTPUT_DIR, TEST_NET_NAME, i) for i in view_idxs])
+        if test_dataset.load_images:
+            util.WriteImageTensor(
+                view_images,
+                ['%sgt_view_%04d.png' % (output_dir, i) for i in view_idxs])
         util.WriteImageTensor(
             out_view_images,
-            ['%s%s/out_view_%04d.png' % (OUTPUT_DIR, TEST_NET_NAME, i) for i in view_idxs])
+            ['%sout_view_%04d.png' % (output_dir, i) for i in view_idxs])
         perf.Checkpoint("%d - Write" % i)
         i += 1
 

@@ -2,7 +2,6 @@ import torch
 import torchvision.transforms.functional as trans_f
 import json
 from ..my import util
-from ..my import imgio
 
 
 class SphericalViewSynDataset(torch.utils.data.dataset.Dataset):
@@ -44,8 +43,11 @@ class SphericalViewSynDataset(torch.utils.data.dataset.Dataset):
         # Load dataset description file
         with open(dataset_desc_path, 'r', encoding='utf-8') as file:
             data_desc = json.loads(file.read())
-        self.view_file_pattern: str = self.data_dir + \
-            data_desc['view_file_pattern']
+        if data_desc['view_file_pattern'] == '':
+            self.load_images = False
+        else:
+            self.view_file_pattern: str = self.data_dir + \
+                data_desc['view_file_pattern']
         self.view_res = (data_desc['view_res']['y'],
                          data_desc['view_res']['x'])
         self.cam_params = data_desc['cam_params']
@@ -54,7 +56,7 @@ class SphericalViewSynDataset(torch.utils.data.dataset.Dataset):
             .view(-1, 3, 3)  # (N, 3, 3)
 
         # Load view images
-        if load_images:
+        if self.load_images:
             self.view_images = util.ReadImageTensor(
                 [self.view_file_pattern % i for i in range(self.view_centers.size(0))])
             if gray:
@@ -75,8 +77,8 @@ class SphericalViewSynDataset(torch.utils.data.dataset.Dataset):
 
         # Flatten rays if ray_as_item = True
         if ray_as_item:
-            self.view_pixels = self.view_images.permute(
-                0, 2, 3, 1).flatten(0, 2)
+            self.view_pixels = self.view_images.permute(0, 2, 3, 1).flatten(
+                0, 2) if self.view_images != None else None
             self.ray_positions = self.ray_positions.flatten(0, 1)
             self.ray_directions = self.ray_directions.flatten(0, 1)
 
@@ -88,4 +90,4 @@ class SphericalViewSynDataset(torch.utils.data.dataset.Dataset):
             if self.ray_as_item:
                 return idx, self.view_pixels[idx], self.ray_positions[idx], self.ray_directions[idx]
             return idx, self.view_images[idx], self.ray_positions[idx], self.ray_directions[idx]
-        return idx, self.ray_positions[idx], self.ray_directions[idx]
+        return idx, False, self.ray_positions[idx], self.ray_directions[idx]
