@@ -1,11 +1,13 @@
-from typing import List, Tuple
-from math import pi
-import numpy as np
+from typing import List, Tuple, Union
+import os
+import math
 import torch
 import torchvision
-import matplotlib.pyplot as plt
+import torchvision.transforms.functional as trans_func
 import glm
-import os
+import numpy as np
+import matplotlib.pyplot as plt
+from torch.types import Number
 
 from torchvision.utils import save_image
 
@@ -16,7 +18,7 @@ gmat_type = [[glm.dmat2, glm.dmat2x3, glm.dmat2x4],
 
 
 def Fov2Length(angle):
-    return np.tan(angle * np.pi / 360) * 2
+    return math.tan(math.radians(angle) / 2) * 2
 
 
 def SmoothStep(x0, x1, x):
@@ -153,14 +155,13 @@ def CreateDirIfNeed(path):
         os.makedirs(path)
 
 
-def GetLocalViewRays(cam_params, res: Tuple[int, int], flatten=False) -> torch.Tensor:
+def GetLocalViewRays(cam_params, res: Tuple[int, int], flatten=False, norm=True) -> torch.Tensor:
     coords = MeshGrid(res)
     c = torch.tensor([cam_params['cx'], cam_params['cy']])
     f = torch.tensor([cam_params['fx'], cam_params['fy']])
-    rays = torch.cat([
-        (coords - c) / f,
-        torch.ones(res[0], res[1], 1, )
-    ], dim=2)
+    rays = broadcast_cat((coords - c) / f, 1.0)
+    if norm:
+        rays = rays / rays.norm(dim=-1, keepdim=True)
     if flatten:
         rays = rays.flatten(0, 1)
     return rays
@@ -175,7 +176,7 @@ def CartesianToSpherical(cart: torch.Tensor) -> torch.Tensor:
     """
     rho = torch.norm(cart, p=2, dim=-1)
     theta = torch.atan2(cart[..., 2], cart[..., 0])
-    theta = theta + (theta < 0).type_as(theta) * (2 * pi)
+    theta = theta + (theta < 0).type_as(theta) * (2 * math.pi)
     phi = torch.acos(cart[..., 1] / rho)
     return torch.stack([rho, theta, phi], dim=-1)
 
@@ -207,5 +208,78 @@ def GetDepthLayers(depth_range: Tuple[float, float], n_layers: int) -> List[floa
     """
     diopter_range = (1 / depth_range[1], 1 / depth_range[0])
     depths = [1e5]  # Background layer
-    depths += list(1.0 / np.linspace(diopter_range[0], diopter_range[1], n_layers))
+    depths += list(1.0 /
+                   np.linspace(diopter_range[0], diopter_range[1], n_layers))
     return depths
+
+
+def GetRotMatrix(theta: Union[float, torch.Tensor], phi: Union[float, torch.Tensor]) -> torch.Tensor:
+    """
+    Get rotation matrix from angles in spherical space
+
+    :param theta ```Tensor(..., 1) | float```: rotation angles around y axis
+    :param phi  ```Tensor(..., 1) | float```: rotation angles around x axis
+    :return: ```Tensor(..., 3, 3)``` rotation matrices
+    """
+    if not isinstance(theta, torch.Tensor):
+        theta = torch.tensor([theta])
+    if not isinstance(phi, torch.Tensor):
+        phi = torch.tensor([phi])
+    spher = torch.cat([torch.ones_like(theta), theta, phi], dim=-1)
+    print(spher)
+    forward = SphericalToCartesian(spher)  # (..., 3)
+    up = torch.tensor([0.0, 1.0, 0.0])
+    forward, up = torch.broadcast_tensors(forward, up)
+    print(forward, up)
+    right = torch.cross(forward, up, dim=-1)  # (..., 3)
+    up = torch.cross(right, forward, dim=-1)  # (..., 3)
+    print(right, up, forward)
+    return torch.stack([right, up, forward], dim=-2)  # (..., 3, 3)
+
+
+def broadcast_cat(input: torch.Tensor,
+                  s: Union[Number, List[Number], torch.Tensor],
+                  dim=-1,
+                  append: bool = True) -> torch.Tensor:
+    """
+    Concatenate a tensor with a scalar along last dimension
+
+    :param input ```Tensor(..., N)```: input tensor
+    :param s: scalar
+    :param append: append or prepend the scalar to input tensor
+    :return: ```Tensor(..., N+1)```
+    """
+    if dim != -1:
+        raise NotImplementedError('currently only support the last dimension')
+    if isinstance(s, torch.Tensor):
+        x = s
+    elif isinstance(s, list):
+        x = torch.tensor(s, dtype=input.dtype, device=input.device)
+    else:
+        x = torch.tensor([s], dtype=input.dtype, device=input.device)
+    expand_shape = list(input.size())
+    expand_shape[dim] = -1
+    x = x.expand(expand_shape)
+    return torch.cat([input, x] if append else [x, input], dim)
+
+
+def generate_video(frames: torch.Tensor, path: str, fps: float,
+                   repeat: int = 1, pingpong: bool = False,
+                   video_codec: str = 'libx264'):
+    """
+    Generate video from a sequence of frames after converting type and
+    permuting channels to meet the requirement of  ```torchvision.io.write_video()```
+
+    :param frames ```Tensor(B, C, H, W)```: a sequence of frames
+    :param path: video path
+    :param fps: frames per second
+    :param repeat: repeat times
+    :param pingpong: whether repeat sequence in pinpong form
+    :param video_codec: video codec
+    """
+    frames = trans_func.convert_image_dtype(frames, torch.uint8)
+    frames = frames.detach().cpu().permute(0, 2, 3, 1)
+    if pingpong:
+        frames = torch.cat([frames, frames.flip(0)], 0)
+    frames = frames.expand(repeat, -1, -1, -1, 3).flatten(0, 1)
+    torchvision.io.write_video(path, frames, fps, video_codec)

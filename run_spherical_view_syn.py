@@ -1,26 +1,34 @@
+import math
 import sys
 import os
-sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deeplightfield"
-
 import argparse
 import torch
 import torch.optim
 import torchvision
+import importlib
 from tensorboardX import SummaryWriter
 from torch import nn
-from .my import netio
-from .my import util
-from .my import device
-from .my.simple_perf import SimplePerf
-from .data.spherical_view_syn import SphericalViewSynDataset
-from .msl_net import MslNet
-from .spher_net import SpherNet
 
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
+__package__ = "deeplightfield"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=3,
                     help='Which CUDA device to use.')
+parser.add_argument('--config', type=str,
+                    help='Net config files')
+parser.add_argument('--dataset', type=str, required=True,
+                    help='Dataset description file')
+parser.add_argument('--test', type=str,
+                    help='Test net file')
+parser.add_argument('--test-samples', type=int,
+                    help='Samples used for test')
+parser.add_argument('--output-gt', action='store_true',
+                    help='Output ground truth images if exist')
+parser.add_argument('--output-alongside', action='store_true',
+                    help='Output generated image alongside ground truth image')
+parser.add_argument('--output-video', action='store_true',
+                    help='Output test results as video')
 opt = parser.parse_args()
 
 
@@ -28,201 +36,297 @@ opt = parser.parse_args()
 torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-# Toggles
-GRAY = False
-ROT_ONLY = False
-TRAIN_MODE = True
-EVAL_TIME_PERFORMANCE = False
-RAY_AS_ITEM = True
-# ========
-GRAY = True
-#ROT_ONLY = True
-#TRAIN_MODE = False
-#EVAL_TIME_PERFORMANCE = True
-#RAY_AS_ITEM = False
+from .my import netio
+from .my import util
+from .my import device
+from .my.simple_perf import SimplePerf
+from .data.spherical_view_syn import *
+from .msl_net import MslNet
+from .spher_net import SpherNet
+from .my import loss
 
-# Net parameters
-DEPTH_RANGE = (1, 10)
-N_DEPTH_LAYERS = 10
-N_ENCODE_DIM = 10
-FC_PARAMS = {
-    'nf': 128,
-    'n_layers': 8,
-    'skips': [4]
-}
+
+class Config(object):
+    def __init__(self):
+        self.name = 'default'
+
+        self.GRAY = False
+
+        # Net parameters
+        self.NET_TYPE = 'msl'
+        self.N_ENCODE_DIM = 10
+        self.FC_PARAMS = {
+            'nf': 256,
+            'n_layers': 8,
+            'skips': [4]
+        }
+        self.SAMPLE_PARAMS = {
+            'depth_range': (1, 50),
+            'n_samples': 32,
+            'perturb_sample': True
+        }
+        self.LOSS = 'mse'
+
+    def load(self, path):
+        module_name = os.path.splitext(path)[0].replace('/', '.')
+        config_module = importlib.import_module(
+            'deeplightfield.' + module_name)
+        config_module.update_config(config)
+        self.name = module_name.split('.')[-1]
+
+    def load_by_name(self, name):
+        config_module = importlib.import_module(
+            'deeplightfield.configs.' + name)
+        config_module.update_config(config)
+        self.name = name
+
+    def print(self):
+        print('==== Config %s ====' % self.name)
+        print('Net type: ', self.NET_TYPE)
+        print('Encode dim: ', self.N_ENCODE_DIM)
+        print('Full-connected network parameters:', self.FC_PARAMS)
+        print('Sample parameters', self.SAMPLE_PARAMS)
+        print('Loss', self.LOSS)
+        print('==========================')
+
+
+config = Config()
+
+# Toggles
+ROT_ONLY = False
+EVAL_TIME_PERFORMANCE = False
+# ========
+#ROT_ONLY = True
+#EVAL_TIME_PERFORMANCE = True
 
 # Train
-TRAIN_DATA_DESC_FILE = 'train.json'
-BATCH_SIZE = 2048 if RAY_AS_ITEM else 4
+PATCH_SIZE = 1
+BATCH_SIZE = 4096 // (PATCH_SIZE * PATCH_SIZE)
 EPOCH_RANGE = range(0, 500)
 SAVE_INTERVAL = 20
 
 # Test
-TEST_NET_NAME = 'model-epoch_500'
-TEST_DATA_DESC_FILE = 'test_fovea.json'
-TEST_BATCH_SIZE = 5
+TEST_BATCH_SIZE = 1
+TEST_CHUNKS = 1
 
 # Paths
-DATA_DIR = sys.path[0] + '/data/sp_view_syn_2020.12.28/'
-RUN_ID = '%s_ray_b%d_encode%d_fc%dx%d%s' % ('gray' if GRAY else 'rgb',
-                                            BATCH_SIZE,
-                                            N_ENCODE_DIM,
-                                            FC_PARAMS['nf'],
-                                            FC_PARAMS['n_layers'],
-                                            '_skip_%d' % FC_PARAMS['skips'][0] if len(FC_PARAMS['skips']) > 0 else '')
-RUN_DIR = DATA_DIR + RUN_ID + '/'
-OUTPUT_DIR = RUN_DIR + 'output/'
-LOG_DIR = RUN_DIR + 'log/'
+data_desc_path = opt.dataset
+data_desc_name = os.path.split(data_desc_path)[1]
+if opt.test:
+    test_net_path = opt.test
+    test_net_name = os.path.splitext(os.path.basename(test_net_path))[0]
+    run_dir = os.path.dirname(test_net_path) + '/'
+    run_id = os.path.basename(run_dir[:-1])
+    config_name = run_id.split('_b')[0]
+    output_dir = run_dir + 'output/%s/%s/' % (test_net_name, data_desc_name)
+    config.load_by_name(config_name)
+    train_mode = False
+    if opt.test_samples:
+        config.SAMPLE_PARAMS['n_samples'] = opt.test_samples
+        output_dir = run_dir + 'output/%s/%s_s%d/' % \
+            (test_net_name, data_desc_name, opt.test_samples)
+else:
+    if opt.config:
+        config.load(opt.config)
+    data_dir = os.path.dirname(data_desc_path) + '/'
+    run_id = '%s_b%d[%d]' % (config.name, BATCH_SIZE, PATCH_SIZE)
+    run_dir = data_dir + run_id + '/'
+    log_dir = run_dir + 'log/'
+    output_dir = None
+    train_mode = True
+
+config.print()
+print("dataset: ", data_desc_path)
+print("train_mode: ", train_mode)
+print("run_dir: ", run_dir)
+if not train_mode:
+    print("output_dir", output_dir)
+
+config.SAMPLE_PARAMS['perturb_sample'] = \
+    config.SAMPLE_PARAMS['perturb_sample'] and train_mode
+
+NETS = {
+    'msl': lambda: MslNet(
+        fc_params=config.FC_PARAMS,
+        sampler_params=(config.SAMPLE_PARAMS.update(
+            {'spherical': True}), config.SAMPLE_PARAMS)[1],
+        gray=config.GRAY,
+        encode_to_dim=config.N_ENCODE_DIM),
+    'nerf': lambda: MslNet(
+        fc_params=config.FC_PARAMS,
+        sampler_params=(config.SAMPLE_PARAMS.update(
+            {'spherical': False}), config.SAMPLE_PARAMS)[1],
+        gray=config.GRAY,
+        encode_to_dim=config.N_ENCODE_DIM),
+    'spher': lambda: SpherNet(
+        fc_params=config.FC_PARAMS,
+        gray=config.GRAY,
+        translation=not ROT_ONLY,
+        encode_to_dim=config.N_ENCODE_DIM)
+}
+
+LOSSES = {
+    'mse': lambda: nn.MSELoss(),
+    'mse_grad': lambda: loss.CombinedLoss(
+        [nn.MSELoss(), loss.GradLoss()], [1.0, 0.5])
+}
+
+# Initialize model
+model = NETS[config.NET_TYPE]().to(device.GetDevice())
+
+
+def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
+    sub_iters = 0
+    iters_in_epoch = len(data_loader)
+    for _, gt, rays_o, rays_d in data_loader:
+        gt = gt.to(device.GetDevice())
+        rays_o = rays_o.to(device.GetDevice())
+        rays_d = rays_d.to(device.GetDevice())
+        perf.Checkpoint("Load")
+
+        out = model(rays_o, rays_d)
+        perf.Checkpoint("Forward")
+
+        optimizer.zero_grad()
+        loss_value = loss(out, gt)
+        perf.Checkpoint("Compute loss")
+
+        loss_value.backward()
+        perf.Checkpoint("Backward")
+
+        optimizer.step()
+        perf.Checkpoint("Update")
+
+        print("Epoch: %d, Iter: %d(%d/%d), Loss: %f" %
+              (epoch, iters, sub_iters, iters_in_epoch, loss_value.item()))
+
+        # Write tensorboard logs.
+        writer.add_scalar("loss", loss_value, iters)
+        if len(gt.size()) == 4 and iters % 100 == 0:
+            output_vs_gt = torch.cat([out[0:4], gt[0:4]], 0).detach()
+            writer.add_image("Output_vs_gt", torchvision.utils.make_grid(
+                output_vs_gt, nrow=4).cpu().numpy(), iters)
+
+        iters += 1
+        sub_iters += 1
+    return iters
 
 
 def train():
     # 1. Initialize data loader
-    print("Load dataset: " + DATA_DIR + TRAIN_DATA_DESC_FILE)
-    train_dataset = SphericalViewSynDataset(DATA_DIR + TRAIN_DATA_DESC_FILE,
-                                            gray=GRAY, ray_as_item=RAY_AS_ITEM)
-    train_data_loader = torch.utils.data.DataLoader(
+    print("Load dataset: " + data_desc_path)
+    train_dataset = FastSphericalViewSynDataset(data_desc_path,
+                                                gray=config.GRAY)
+    train_dataset.set_patch_size((PATCH_SIZE, PATCH_SIZE))
+    train_data_loader = FastDataLoader(
         dataset=train_dataset,
         batch_size=BATCH_SIZE,
-        pin_memory=True,
         shuffle=True,
-        drop_last=False)
-    print('Data loaded. %d iters per epoch.' % len(train_data_loader))
+        drop_last=False,
+        pin_memory=True)
 
     # 2. Initialize components
-    if ROT_ONLY:
-        model = SpherNet(cam_params=train_dataset.cam_params,
-                         fc_params=FC_PARAMS,
-                         out_res=train_dataset.view_res,
-                         gray=GRAY,
-                         encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
-    else:
-        model = MslNet(cam_params=train_dataset.cam_params,
-                       fc_params=FC_PARAMS,
-                       sphere_layers=util.GetDepthLayers(
-                           DEPTH_RANGE, N_DEPTH_LAYERS),
-                       out_res=train_dataset.view_res,
-                       gray=GRAY,
-                       encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
-    loss = nn.MSELoss()
+    loss = LOSSES[config.LOSS]().to(device.GetDevice())
 
     if EPOCH_RANGE.start > 0:
-        netio.LoadNet('%smodel-epoch_%d.pth' % (RUN_DIR, EPOCH_RANGE.start),
-                      model, solver=optimizer)
+        iters = netio.LoadNet('%smodel-epoch_%d.pth' % (run_dir, EPOCH_RANGE.start),
+                              model, solver=optimizer)
+    else:
+        iters = 0
+    epoch = None
 
     # 3. Train
     model.train()
-    epoch = None
-    iters = EPOCH_RANGE.start * len(train_data_loader)
 
-    util.CreateDirIfNeed(RUN_DIR)
-    util.CreateDirIfNeed(LOG_DIR)
+    util.CreateDirIfNeed(run_dir)
+    util.CreateDirIfNeed(log_dir)
 
     perf = SimplePerf(EVAL_TIME_PERFORMANCE, start=True)
     perf_epoch = SimplePerf(True, start=True)
-    writer = SummaryWriter(LOG_DIR)
+    writer = SummaryWriter(log_dir)
 
     print("Begin training...")
     for epoch in EPOCH_RANGE:
-        for _, gt, ray_positions, ray_directions in train_data_loader:
-
-            gt = gt.to(device.GetDevice())
-            ray_positions = ray_positions.to(device.GetDevice())
-            ray_directions = ray_directions.to(device.GetDevice())
-
-            perf.Checkpoint("Load")
-
-            out = model(ray_positions, ray_directions)
-
-            perf.Checkpoint("Forward")
-
-            optimizer.zero_grad()
-            loss_value = loss(out, gt)
-
-            perf.Checkpoint("Compute loss")
-
-            loss_value.backward()
-
-            perf.Checkpoint("Backward")
-
-            optimizer.step()
-
-            perf.Checkpoint("Update")
-
-            print("Epoch: ", epoch, ", Iter: ", iters,
-                  ", Loss: ", loss_value.item())
-
-            # Write tensorboard logs.
-            writer.add_scalar("loss", loss_value, iters)
-            if not RAY_AS_ITEM and iters % 100 == 0:
-                output_vs_gt = torch.cat([out, gt], dim=0)
-                writer.add_image("Output_vs_gt", torchvision.utils.make_grid(
-                    output_vs_gt, scale_each=True, normalize=False)
-                    .cpu().detach().numpy(), iters)
-
-            iters += 1
-
         perf_epoch.Checkpoint("Epoch")
+        iters = train_loop(train_data_loader, optimizer, loss,
+                           perf, writer, epoch, iters)
         # Save checkpoint
         if ((epoch + 1) % SAVE_INTERVAL == 0):
-            netio.SaveNet('%smodel-epoch_%d.pth' % (RUN_DIR, epoch + 1), model,
-                          solver=optimizer)
+            netio.SaveNet('%smodel-epoch_%d.pth' % (run_dir, epoch + 1), model,
+                          solver=optimizer, iters=iters)
 
     print("Train finished")
 
 
-def test(net_file: str):
+def test():
+    torch.autograd.set_grad_enabled(False)
+
     # 1. Load train dataset
-    print("Load dataset: " + DATA_DIR + TEST_DATA_DESC_FILE)
-    test_dataset = SphericalViewSynDataset(DATA_DIR + TEST_DATA_DESC_FILE,
-                                           load_images=True, gray=GRAY)
+    print("Load dataset: " + data_desc_path)
+    test_dataset = SphericalViewSynDataset(data_desc_path,
+                                           load_images=opt.output_gt,
+                                           gray=config.GRAY)
     test_data_loader = torch.utils.data.DataLoader(
         dataset=test_dataset,
-        batch_size=TEST_BATCH_SIZE,
-        pin_memory=True,
+        batch_size=1,
         shuffle=False,
-        drop_last=False)
+        drop_last=False,
+        pin_memory=True)
 
     # 2. Load trained model
-    if ROT_ONLY:
-        model = SpherNet(cam_params=test_dataset.cam_params,
-                         fc_params=FC_PARAMS,
-                         out_res=test_dataset.view_res,
-                         gray=GRAY,
-                         encode_to_dim=N_ENCODE_DIM).to(device.GetDevice())
-    else:
-        model = MslNet(cam_params=test_dataset.cam_params,
-                       sphere_layers=util.GetDepthLayers(
-                           DEPTH_RANGE, N_DEPTH_LAYERS),
-                       out_res=test_dataset.view_res,
-                       gray=GRAY).to(device.GetDevice())
-    netio.LoadNet(net_file, model)
+    netio.LoadNet(test_net_path, model)
 
     # 3. Test on train dataset
     print("Begin test on train dataset, batch size is %d" % TEST_BATCH_SIZE)
-    output_dir = '%s%s/%s/' % (OUTPUT_DIR, TEST_NET_NAME, TEST_DATA_DESC_FILE)
     util.CreateDirIfNeed(output_dir)
+
     perf = SimplePerf(True, start=True)
     i = 0
-    for view_idxs, view_images, ray_positions, ray_directions in test_data_loader:
-        ray_positions = ray_positions.to(device.GetDevice())
-        ray_directions = ray_directions.to(device.GetDevice())
+    n = test_dataset.view_rots.size(0)
+    chns = 1 if config.GRAY else 3
+    out_view_images = torch.empty(n, chns, test_dataset.view_res[0],
+                                  test_dataset.view_res[1], device=device.GetDevice())
+    print(out_view_images.size())
+    for view_idxs, _, rays_o, rays_d in test_data_loader:
         perf.Checkpoint("%d - Load" % i)
-        out_view_images = model(ray_positions, ray_directions)
+        rays_o = rays_o.to(device.GetDevice()).view(-1, 3)
+        rays_d = rays_d.to(device.GetDevice()).view(-1, 3)
+        n_rays = rays_o.size(0)
+        chunk_size = n_rays // TEST_CHUNKS
+        out_pixels = torch.empty(n_rays, chns, device=device.GetDevice())
+        for offset in range(0, n_rays, chunk_size):
+            rays_o_ = rays_o[offset:offset + chunk_size]
+            rays_d_ = rays_d[offset:offset + chunk_size]
+            out_pixels[offset:offset + chunk_size] = \
+                model(rays_o_, rays_d_)
+        out_view_images[view_idxs] = out_pixels.view(
+            TEST_BATCH_SIZE, test_dataset.view_res[0],
+            test_dataset.view_res[1], -1).permute(0, 3, 1, 2)
         perf.Checkpoint("%d - Infer" % i)
-        if test_dataset.load_images:
-            util.WriteImageTensor(
-                view_images,
-                ['%sgt_view_%04d.png' % (output_dir, i) for i in view_idxs])
-        util.WriteImageTensor(
-            out_view_images,
-            ['%sout_view_%04d.png' % (output_dir, i) for i in view_idxs])
-        perf.Checkpoint("%d - Write" % i)
         i += 1
+
+    if opt.output_video:
+        util.generate_video(out_view_images, output_dir +
+                            'out.mp4', 24, 3, True)
+    else:
+        gt_paths = ['%sgt_view_%04d.png' % (output_dir, i) for i in range(n)]
+        out_paths = ['%sout_view_%04d.png' % (output_dir, i) for i in range(n)]
+        if test_dataset.load_images:
+            if opt.output_alongside:
+                util.WriteImageTensor(
+                    torch.cat([test_dataset.view_images,
+                               out_view_images.cpu()], 3),
+                    out_paths)
+            else:
+                util.WriteImageTensor(out_view_images, out_paths)
+                util.WriteImageTensor(test_dataset.view_images, gt_paths)
+        else:
+            util.WriteImageTensor(out_view_images, out_paths)
 
 
 if __name__ == "__main__":
-    if TRAIN_MODE:
+    if train_mode:
         train()
     else:
-        test(RUN_DIR + TEST_NET_NAME + '.pth')
+        test()
