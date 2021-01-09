@@ -209,7 +209,7 @@ class MslNet(nn.Module):
         self.rendering = Rendering()
         self.export_mode = export_mode
 
-    def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor,
+    def forward(self, fc_input: torch.Tensor,
                 ret_depth: bool = False) -> torch.Tensor:
         """
         rays -> colors
@@ -218,11 +218,10 @@ class MslNet(nn.Module):
         :param rays_d ```Tensor(B, 3)```: rays' direction
         :return: ```Tensor(B, C)``, inferred images/pixels
         """
-        coords, depths = self.sampler(rays_o, rays_d)
-        encoded = self.input_encoder(coords)
+        depths = torch.ones(4096, 16, device="cuda")
 
         if self.export_mode:
-            colors, alphas = self.rendering.raw2color(self.net(encoded), depths)
+            colors, alphas = self.rendering.raw2color(self.net(fc_input), depths)
             return torch.cat([colors, alphas[..., None]], -1)
 
         if ret_depth:

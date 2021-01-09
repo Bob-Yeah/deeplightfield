@@ -5,13 +5,11 @@ def update_config(config):
     # Net parameters
     config.NET_TYPE = 'msl'
     config.N_ENCODE_DIM = 10
-    config.FC_PARAMS = {
+    config.FC_PARAMS.update({
         'nf': 64,
-        'n_layers': 12,
-        'skips': []
-    }
-    config.SAMPLE_PARAMS = {
+        'n_layers': 12
+    })
+    config.SAMPLE_PARAMS.update({
         'depth_range': (1, 20),
-        'n_samples': 16,
-        'perturb_sample': True
-    }
+        'n_samples': 16
+    })

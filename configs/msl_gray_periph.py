@@ -6,11 +6,10 @@ def update_config(config):
     config.NET_TYPE = 'msl'
     config.N_ENCODE_DIM = 10
     config.FC_PARAMS.update({
-        'nf': 256,
-        'n_layers': 8,
-        'skips': [4]
+        'nf': 64,
+        'n_layers': 8
     })
     config.SAMPLE_PARAMS.update({
-        'depth_range': (1, 20),
-        'n_samples': 16
+        'depth_range': (1, 50),
+        'n_samples': 4
     })

@@ -5,6 +5,7 @@ import torch
 import torchvision
 import torchvision.transforms.functional as trans_func
 import glm
+import csv
 import numpy as np
 import matplotlib.pyplot as plt
 from torch.types import Number
@@ -106,8 +107,14 @@ def WriteImageTensor(t, path):
         save_image(t, path)
 
 
-def PlotImageTensor(t):
-    plt.imshow(Tensor2MatImg(t))
+def PlotImageTensor(t: torch.Tensor, *, ax: plt.Axes = None):
+    """
+    Plot a image tensor using matplotlib
+
+    :param t: 2D (single channel image), 3D (multiple channels image) or 4D (3D image with batch dim) tensor
+    :param ax: (Optional) Specify the axes to plot image
+    """
+    return plt.imshow(Tensor2MatImg(t)) if ax is None else ax.imshow(Tensor2MatImg(t))
 
 
 def Tensor2Glm(t):
@@ -154,30 +161,26 @@ def CreateDirIfNeed(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
-
-def GetLocalViewRays(cam_params, res: Tuple[int, int], flatten=False, norm=True) -> torch.Tensor:
-    coords = MeshGrid(res)
-    c = torch.tensor([cam_params['cx'], cam_params['cy']])
-    f = torch.tensor([cam_params['fx'], cam_params['fy']])
-    rays = broadcast_cat((coords - c) / f, 1.0)
-    if norm:
-        rays = rays / rays.norm(dim=-1, keepdim=True)
-    if flatten:
-        rays = rays.flatten(0, 1)
-    return rays
+def get_angle(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    angle = -torch.atan(x / y) + (y < 0) * math.pi + 0.5 * math.pi
+    return angle
 
 
-def CartesianToSpherical(cart: torch.Tensor) -> torch.Tensor:
+def CartesianToSpherical(cart: torch.Tensor, inverse_r: bool = False) -> torch.Tensor:
     """
     Convert coordinates from Cartesian to Spherical
 
-    :param cart: ... x 3, coordinates in Cartesian
-    :return: ... x 3, coordinates in Spherical (r, theta, phi)
+    :param cart ```Tensor(..., 3)```: coordinates in Cartesian
+    :param inverse_r: whether to inverse r
+    :return ```Tensor(..., 3)```: coordinates in Spherical (r, theta, phi)
     """
-    rho = torch.norm(cart, p=2, dim=-1)
-    theta = torch.atan2(cart[..., 2], cart[..., 0])
-    theta = theta + (theta < 0).type_as(theta) * (2 * math.pi)
-    phi = torch.acos(cart[..., 1] / rho)
+    rho = torch.sqrt(torch.sum(cart * cart, dim=-1))
+    theta = get_angle(cart[..., 0], cart[..., 2])
+    if inverse_r:
+        rho = rho.reciprocal()
+        phi = torch.acos(cart[..., 1] * rho)
+    else:
+        phi = torch.acos(cart[..., 1] / rho)
     return torch.stack([rho, theta, phi], dim=-1)
 
 
@@ -283,3 +286,25 @@ def generate_video(frames: torch.Tensor, path: str, fps: float,
         frames = torch.cat([frames, frames.flip(0)], 0)
     frames = frames.expand(repeat, -1, -1, -1, 3).flatten(0, 1)
     torchvision.io.write_video(path, frames, fps, video_codec)
+
+def is_image_file(filename):
+    return any(filename.endswith(extension) for extension in [".png", ".jpg", ".jpeg"])
+
+
+def save_2d_tensor(path, x):
+    with open(path, 'w', encoding='utf-8', newline='') as f:
+        csv_writer = csv.writer(f)
+        for i in range(x.shape[0]):
+            csv_writer.writerow(x[i])
+
+def view_like(input: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+    """
+    Reshape input to be the same size as ref except the last dimension
+
+    :param input ```Tensor(..., C)```: input tensor
+    :param ref ```Tensor(B.., *): reference tensor
+    :return ```Tensor(B.., C)```: reshaped tensor
+    """
+    out_shape = list(ref.size())
+    out_shape[-1] = -1
+    return input.view(out_shape)
