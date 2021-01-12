@@ -4,6 +4,8 @@ import torch.nn as nn
 from .my import net_modules
 from .my import util
 from .my import device
+from .my import color_mode
+
 
 rand_gen = torch.Generator(device=device.GetDevice())
 rand_gen.manual_seed(torch.seed())
@@ -187,7 +189,7 @@ class Sampler(nn.Module):
 class MslNet(nn.Module):
 
     def __init__(self, fc_params, sampler_params,
-                 gray=False,
+                 color: int = color_mode.RGB,
                  encode_to_dim: int = 0,
                  export_mode: bool = False):
         """
@@ -203,11 +205,24 @@ class MslNet(nn.Module):
         self.input_encoder = net_modules.InputEncoder.Get(
             encode_to_dim, self.in_chns)
         fc_params['in_chns'] = self.input_encoder.out_dim
-        fc_params['out_chns'] = 2 if gray else 4
+        fc_params['out_chns'] = 2 if color == color_mode.GRAY else 4
         self.sampler = Sampler(**sampler_params)
-        self.net = net_modules.FcNet(**fc_params)
         self.rendering = Rendering()
         self.export_mode = export_mode
+        if color == color_mode.YCbCr:
+            self.net1 = net_modules.FcNet(
+                in_chns=fc_params['in_chns'],
+                out_chns=fc_params['nf'] + 2,
+                nf=fc_params['nf'],
+                n_layers=fc_params['n_layers'] - 2)
+            self.net2 = net_modules.FcNet(
+                in_chns=fc_params['nf'],
+                out_chns=2,
+                nf=fc_params['nf'],
+                n_layers=1)
+            self.net = None
+        else:
+            self.net = net_modules.FcNet(**fc_params)
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor,
                 ret_depth: bool = False) -> torch.Tensor:
@@ -221,13 +236,23 @@ class MslNet(nn.Module):
         coords, depths = self.sampler(rays_o, rays_d)
         encoded = self.input_encoder(coords)
 
+        if not self.net:
+            mid_output = self.net1(encoded)
+            net2_output = self.net2(mid_output[..., :-2])
+            raw = torch.cat([
+                mid_output[..., -2:],
+                net2_output
+            ], -1)
+        else:
+            raw = self.net(encoded)
+        
         if self.export_mode:
-            colors, alphas = self.rendering.raw2color(self.net(encoded), depths)
+            colors, alphas = self.rendering.raw2color(raw, depths)
             return torch.cat([colors, alphas[..., None]], -1)
 
         if ret_depth:
             color_map, _, _, _, depth_map = self.rendering(
-                self.net(encoded), depths, ret_extra=True)
+                raw, depths, ret_extra=True)
             return color_map, depth_map
         
-        return self.rendering(self.net(encoded), depths)
+        return self.rendering(raw, depths)

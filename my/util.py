@@ -308,3 +308,74 @@ def view_like(input: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
     out_shape = list(ref.size())
     out_shape[-1] = -1
     return input.view(out_shape)
+
+def rgb2ycbcr(input: torch.Tensor) -> torch.Tensor:
+    """
+    Convert input tensor from RGB to YCbCr
+
+    :param input ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    :return ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    """
+    if input.size(-1) == 3:
+        r = input[..., 0:1]
+        g = input[..., 1:2]
+        b = input[..., 2:3]
+        dim_c = -1
+    else:
+        r = input[..., 0:1, :, :]
+        g = input[..., 1:2, :, :]
+        b = input[..., 2:3, :, :]
+        dim_c = -3
+    y = r * 0.25678824 + g * 0.50412941 + b * 0.09790588 + 0.0625
+    cb = r * -0.14822353 + g * -0.29099216 + b * 0.43921569 + 0.5
+    cr = r * 0.43921569 + g * -0.36778824 + b * -0.07142745 + 0.5
+    return torch.cat([y, cb, cr], dim_c)
+
+
+def rgb2ycbcr(input: torch.Tensor) -> torch.Tensor:
+    """
+    Convert input tensor from RGB to YCbCr
+
+    :param input ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    :return ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    """
+    if input.size(-1) == 3:
+        r = input[..., 0:1]
+        g = input[..., 1:2]
+        b = input[..., 2:3]
+        dim_c = -1
+    else:
+        r = input[..., 0:1, :, :]
+        g = input[..., 1:2, :, :]
+        b = input[..., 2:3, :, :]
+        dim_c = -3
+    y = r * 0.257 + g * 0.504 + b * 0.098 + 0.0625
+    cb = r * -0.148 + g * -0.291 + b * 0.439 + 0.5
+    cr = r * 0.439 + g * -0.368 + b * -0.071 + 0.5
+    return torch.cat([cb, cr, y], dim_c)
+
+
+def ycbcr2rgb(input: torch.Tensor) -> torch.Tensor:
+    """
+    Convert input tensor from YCbCr to RGB
+
+    :param input ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    :return ```Tensor(..., 3) | Tensor(..., 3, H, W)```: 
+    """
+    if input.size(-1) == 3:
+        cb = input[..., 0:1]
+        cr = input[..., 1:2]
+        y = input[..., 2:3]
+        dim_c = -1
+    else:
+        cb = input[..., 0:1, :, :]
+        cr = input[..., 1:2, :, :]
+        y = input[..., 2:3, :, :]
+        dim_c = -3
+    y = y - 0.0625
+    cb = cb - 0.5
+    cr = cr - 0.5
+    r = y * 1.164 + cr * 1.596
+    g = y * 1.164 + cb * -0.392 + cr * -0.813
+    b = y * 1.164 + cb * 2.017
+    return torch.cat([r, g, b], dim_c)

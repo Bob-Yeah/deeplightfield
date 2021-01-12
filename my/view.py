@@ -18,6 +18,13 @@ class CameraParam(object):
         self.c = self.c.to(device)
         return self
 
+    def resize(self, res: Tuple[int, int]):
+        self.f[0] = self.f[0] / self.res[1] * res[1]
+        self.f[1] = self.f[1] / self.res[0] * res[0]
+        self.c[0] = self.c[0] / self.res[1] * res[1]
+        self.c[1] = self.c[1] / self.res[0] * res[0]
+        self.res = res
+        
     def proj(self, p: torch.Tensor) -> torch.Tensor:
         """
         Project positions in local space to image plane
@@ -70,8 +77,8 @@ class CameraParam(object):
         :return: [description]
         """
         rays = self.get_local_rays(flatten, norm)  # (M.., 3)
-        rays_o, _ = torch.broadcast_tensors(
-            t[..., None, None, :], rays)  # (N.., M.., 3)
+        rays_o, _ = torch.broadcast_tensors(t[..., None, :], rays) if flatten \
+            else torch.broadcast_tensors(t[..., None, None, :], rays)  # (N.., M.., 3)
         rays_d = trans_vector(rays, r)
         return rays_o, rays_d
 
@@ -87,9 +94,12 @@ class CameraParam(object):
         input_is_normalized = bool(input_camera_params.get('normalized'))
         camera_params = {}
         if 'fov' in input_camera_params:
-            camera_params['fx'] = camera_params['fy'] = \
-                (1 if input_is_normalized else view_res[0]) / \
-                util.Fov2Length(input_camera_params['fov'])
+            if input_is_normalized:
+                camera_params['fy'] = 1 / util.Fov2Length(input_camera_params['fov'])
+                camera_params['fx'] = camera_params['fy'] / view_res[1] * view_res[0]
+            else:
+                camera_params['fx'] = camera_params['fy'] = view_res[0] / \
+                    util.Fov2Length(input_camera_params['fov'])
             camera_params['fy'] *= -1
         else:
             camera_params['fx'] = input_camera_params['fx']
@@ -114,15 +124,17 @@ def trans_point(p: torch.Tensor, t: torch.Tensor, r: torch.Tensor, inverse=False
     :param inverse: whether perform inverse transform
     :return ```Tensor(M.., N.., 3)```: transformed points
     """
-    out_size = list(r.size())[0:-2] + list(p.size())[0:-1] + [3]
-    t_size = list(t.size()[0:-1]) + \
-        [1 for _ in range(len(p.size()[0:-1]))] + [3]
+    size_N = list(p.size())[0:-1]
+    size_M = list(r.size())[0:-2]
+    out_size = size_M + size_N + [3]
+    t_size = size_M + [1 for _ in range(len(size_N))] + [3]
     t = t.view(t_size)
     if not inverse:
         r = r.movedim(-1, -2)  # Transpose rotation matrices
     else:
         p = p - t
-    out = torch.matmul(p.flatten(0, -2), r).view(out_size)
+    out = torch.matmul(p.view(size_M + [-1, 3]), r)
+    out = out.view(out_size)
     if not inverse:
         out = out + t
     return out

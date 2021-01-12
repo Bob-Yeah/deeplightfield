@@ -1,6 +1,6 @@
 import sys
 sys.path.append('/e/dengnc')
-__package__ = "deeplightfield"
+__package__ = "deep_view_syn"
 
 import os
 import torch

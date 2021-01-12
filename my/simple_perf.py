@@ -24,6 +24,8 @@ class SimplePerf(object):
             return
         self.end_event.record()
         torch.cuda.synchronize()
-        print('%s: %.1fms' % (name, self.start_event.elapsed_time(self.end_event)))
+        duration = self.start_event.elapsed_time(self.end_event)
+        print('%s: %.1fms' % (name, duration))
         if not end:
             self.start_event.record()
+        return duration

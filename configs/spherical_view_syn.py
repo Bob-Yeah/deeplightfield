@@ -1,6 +1,7 @@
 import os
 import importlib
 from os.path import join
+from ..my import color_mode
 
 
 class SphericalViewSynConfig(object):
@@ -8,7 +9,7 @@ class SphericalViewSynConfig(object):
     def __init__(self):
         self.name = 'default'
 
-        self.GRAY = False
+        self.COLOR = color_mode.RGB
 
         # Net parameters
         self.NET_TYPE = 'msl'
@@ -30,18 +31,18 @@ class SphericalViewSynConfig(object):
     def load(self, path):
         module_name = os.path.splitext(path)[0].replace('/', '.')
         config_module = importlib.import_module(
-            'deeplightfield.' + module_name)
+            'deep_view_syn.' + module_name)
         config_module.update_config(self)
         self.name = module_name.split('.')[-1]
 
     def load_by_name(self, name):
         config_module = importlib.import_module(
-            'deeplightfield.configs.' + name)
+            'deep_view_syn.configs.' + name)
         config_module.update_config(self)
         self.name = name
 
     def to_id(self):
-        net_type_id = "%s-%s" % (self.NET_TYPE, "gray" if self.GRAY else "rgb")
+        net_type_id = "%s-%s" % (self.NET_TYPE, color_mode.to_str(self.COLOR))
         encode_id = "_e%d" % self.N_ENCODE_DIM
         fc_id = "_fc%dx%d" % (self.FC_PARAMS['nf'], self.FC_PARAMS['n_layers'])
         skip_id = "_skip%s" % ','.join([
@@ -49,7 +50,7 @@ class SphericalViewSynConfig(object):
             for val in self.FC_PARAMS['skips']
         ]) if len(self.FC_PARAMS['skips']) > 0 else ""
         depth_id = "_d%d-%d" % (self.SAMPLE_PARAMS['depth_range'][0],
-                               self.SAMPLE_PARAMS['depth_range'][1])
+                                self.SAMPLE_PARAMS['depth_range'][1])
         samples_id = '_s%d' % self.SAMPLE_PARAMS['n_samples']
         neg_flags = '%s%s%s' % (
             'p' if not self.SAMPLE_PARAMS['perturb_sample'] else '',
@@ -60,32 +61,37 @@ class SphericalViewSynConfig(object):
         return "%s@%s%s%s%s%s%s%s" % (self.name, net_type_id, encode_id, fc_id, skip_id, depth_id, samples_id, neg_flags)
 
     def from_id(self, id: str):
-        self.name, config_str = id.split('@')
-        segs = config_str.split('_')
+        id_splited = id.split('@')
+        if len(id_splited) == 2:
+            self.name = id_splited[0]
+        segs = id_splited[-1].split('_')
         for i, seg in enumerate(segs):
-            if i == 0: # NetType
-                self.NET_TYPE, color_mode = seg.split('-')
-                self.GRAY = (color_mode == 'gray')
-                continue
-            if seg.startswith('e'): # Encode
+            if seg.startswith('e'):  # Encode
                 self.N_ENCODE_DIM = int(seg[1:])
                 continue
-            if seg.startswith('fc'): # Full-connected network parameters
-                self.FC_PARAMS['nf'], self.FC_PARAMS['n_layers'] = (int(str) for str in seg[2:].split('x'))
+            if seg.startswith('fc'):  # Full-connected network parameters
+                self.FC_PARAMS['nf'], self.FC_PARAMS['n_layers'] = (
+                    int(str) for str in seg[2:].split('x'))
                 continue
-            if seg.startswith('skip'): # Skip connection
-                self.FC_PARAMS['skips'] = [int(str) for str in seg[4:].split(',')]
+            if seg.startswith('skip'):  # Skip connection
+                self.FC_PARAMS['skips'] = [int(str)
+                                           for str in seg[4:].split(',')]
                 continue
-            if seg.startswith('d'): # Depth range
-                self.SAMPLE_PARAMS['depth_range'] = tuple(float(str) for str in seg[1:].split('-'))
+            if seg.startswith('d'):  # Depth range
+                self.SAMPLE_PARAMS['depth_range'] = tuple(
+                    float(str) for str in seg[1:].split('-'))
                 continue
-            if seg.startswith('s'): # Number of samples
+            if seg.startswith('s'):  # Number of samples
                 self.SAMPLE_PARAMS['n_samples'] = int(seg[1:])
                 continue
-            if seg.startswith('~'): # Negative flags
+            if seg.startswith('~'):  # Negative flags
                 self.SAMPLE_PARAMS['perturb_sample'] = (seg.find('p') < 0)
                 self.SAMPLE_PARAMS['lindisp'] = (seg.find('l') < 0)
                 self.SAMPLE_PARAMS['inverse_r'] = (seg.find('i') < 0)
+                continue
+            if i == 0:  # NetType
+                self.NET_TYPE, color_str = seg.split('-')
+                self.COLOR = color_mode.from_str(color_str)
                 continue
 
     def print(self):

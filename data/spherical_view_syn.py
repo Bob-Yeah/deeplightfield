@@ -2,10 +2,12 @@ import os
 import json
 import torch
 import torchvision.transforms.functional as trans_f
+import torch.nn.functional as nn_f
 from typing import Tuple, Union
 from ..my import util
 from ..my import device
 from ..my import view
+from ..my import color_mode
 
 
 class SphericalViewSynDataset(object):
@@ -23,7 +25,8 @@ class SphericalViewSynDataset(object):
     """
 
     def __init__(self, dataset_desc_path: str, load_images: bool = True,
-                 load_depths: bool = False, gray: bool = False, calculate_rays: bool = True):
+                 load_depths: bool = False, color: int = color_mode.RGB,
+                 calculate_rays: bool = True, res: Tuple[int, int] = None):
         """
         Initialize data loader for spherical view synthesis task
 
@@ -38,7 +41,7 @@ class SphericalViewSynDataset(object):
         :param dataset_desc_path ```str```: path to the data description file
         :param load_images ```bool```: whether load view images and return in __getitem__()
         :param load_depths ```bool```: whether load depth images and return in __getitem__()
-        :param gray ```bool```: whether convert view images to grayscale
+        :param color ```int```: color space to convert view images to
         :param calculate_rays ```bool```: whether calculate rays
         """
         super().__init__()
@@ -47,7 +50,7 @@ class SphericalViewSynDataset(object):
         self.load_depths = load_depths
 
         # Load dataset description file
-        self._load_desc(dataset_desc_path)
+        self._load_desc(dataset_desc_path, res)
 
         # Load view images
         if self.load_images:
@@ -55,8 +58,12 @@ class SphericalViewSynDataset(object):
                 [self.view_file_pattern % i
                  for i in range(self.view_centers.size(0))]
             ).to(device.GetDevice())
-            if gray:
+            if color == color_mode.GRAY:
                 self.view_images = trans_f.rgb_to_grayscale(self.view_images)
+            elif color == color_mode.YCbCr:
+                self.view_images = util.rgb2ycbcr(self.view_images)
+            if res:
+                self.view_images = nn_f.interpolate(self.view_images, res)
         else:
             self.view_images = None
         
@@ -68,6 +75,8 @@ class SphericalViewSynDataset(object):
                     for i in range(self.view_centers.size(0))]
                 ).to(device.GetDevice()),
                 self.cam_params.get_local_rays())
+            if res:
+                self.view_depths = nn_f.interpolate(self.view_depths, res)
         else:
             self.view_depths = None
 
@@ -85,7 +94,7 @@ class SphericalViewSynDataset(object):
         output /= local_rays[..., 2]
         return output
 
-    def _load_desc(self, path):
+    def _load_desc(self, path, res = None):
         with open(path, 'r', encoding='utf-8') as file:
             data_desc = json.loads(file.read())
         if data_desc['view_file_pattern'] == '':
@@ -103,6 +112,9 @@ class SphericalViewSynDataset(object):
         self.cam_params = view.CameraParam(data_desc['cam_params'],
                                            self.view_res,
                                            device=device.GetDevice())
+        if res:
+            self.view_res = res
+            self.cam_params.resize(res)
         self.depth_range = [
             data_desc['depth_range']['min'],
             data_desc['depth_range']['max']

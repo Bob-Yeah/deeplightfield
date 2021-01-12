@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deeplightfield"
+__package__ = "deep_view_syn"
 
 import argparse
 from PIL import Image

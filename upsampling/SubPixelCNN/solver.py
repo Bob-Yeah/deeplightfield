@@ -8,12 +8,12 @@ import torch.backends.cudnn as cudnn
 import torchvision
 
 from .model import Net
-from ..my.progress_bar import progress_bar
+from my.progress_bar import progress_bar
 
 
-class SRCNNTrainer(object):
+class SubPixelTrainer(object):
     def __init__(self, config, training_loader, testing_loader, writer=None):
-        super(SRCNNTrainer, self).__init__()
+        super(SubPixelTrainer, self).__init__()
         self.CUDA = torch.cuda.is_available()
         self.device = torch.device('cuda' if self.CUDA else 'cpu')
         self.model = None
@@ -28,9 +28,10 @@ class SRCNNTrainer(object):
         self.testing_loader = testing_loader
         self.writer = writer
 
-    def build_model(self):
-        self.model = Net(num_channels=1, base_filter=64, upscale_factor=self.upscale_factor).to(self.device)
-        self.model.weight_init(mean=0.0, std=0.01)
+    def build_model(self, num_channels):
+        if num_channels != 1:
+            raise ValueError('num_channels must be 1')
+        self.model = Net(upscale_factor=self.upscale_factor).to(self.device)
         self.criterion = torch.nn.MSELoss()
         torch.manual_seed(self.seed)
 
@@ -40,17 +41,21 @@ class SRCNNTrainer(object):
             self.criterion.cuda()
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
-        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(self.optimizer, milestones=[50, 75, 100], gamma=0.5)
+        self.scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            self.optimizer, milestones=[50, 75, 100], gamma=0.5)  # lr decay
 
-    def save_model(self):
+    def save(self):
         model_out_path = "model_path.pth"
         torch.save(self.model, model_out_path)
         print("Checkpoint saved to {}".format(model_out_path))
 
-    def train(self, epoch, iters):
+    def train(self, epoch, iters, channels=None):
         self.model.train()
         train_loss = 0
         for batch_num, (_, data, target) in enumerate(self.training_loader):
+            if channels:
+                data = data[..., channels, :, :]
+                target = target[..., channels, :, :]
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
             out = self.model(data)
@@ -59,7 +64,8 @@ class SRCNNTrainer(object):
             loss.backward()
             self.optimizer.step()
             sys.stdout.write('Epoch %d: ' % epoch)
-            progress_bar(batch_num, len(self.training_loader), 'Loss: %.4f' % (train_loss / (batch_num + 1)))
+            progress_bar(batch_num, len(self.training_loader),
+                         'Loss: %.4f' % (train_loss / (batch_num + 1)))
             if self.writer:
                 self.writer.add_scalar("loss", loss, iters)
                 if iters % 100 == 0:
@@ -67,11 +73,13 @@ class SRCNNTrainer(object):
                         .flatten(0, 1).detach()
                     self.writer.add_image(
                         "Output_vs_gt",
-                        torchvision.utils.make_grid(output_vs_gt, nrow=2).cpu().numpy(),
+                        torchvision.utils.make_grid(
+                            output_vs_gt, nrow=2).cpu().numpy(),
                         iters)
             iters += 1
 
-        print("    Average Loss: {:.4f}".format(train_loss / len(self.training_loader)))
+        print("    Average Loss: {:.4f}".format(
+            train_loss / len(self.training_loader)))
         return iters
 
     def test(self):
@@ -85,9 +93,11 @@ class SRCNNTrainer(object):
                 mse = self.criterion(prediction, target)
                 psnr = 10 * log10(1 / mse.item())
                 avg_psnr += psnr
-                progress_bar(batch_num, len(self.testing_loader), 'PSNR: %.4f' % (avg_psnr / (batch_num + 1)))
+                progress_bar(batch_num, len(self.testing_loader),
+                             'PSNR: %.4f' % (avg_psnr / (batch_num + 1)))
 
-        print("    Average PSNR: {:.4f} dB".format(avg_psnr / len(self.testing_loader)))
+        print("    Average PSNR: {:.4f} dB".format(
+            avg_psnr / len(self.testing_loader)))
 
     def run(self):
         self.build_model()
@@ -97,4 +107,4 @@ class SRCNNTrainer(object):
             self.test()
             self.scheduler.step(epoch)
             if epoch == self.nEpochs:
-                self.save_model()
+                self.save()

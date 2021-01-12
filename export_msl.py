@@ -6,17 +6,17 @@ import torch.optim
 from torch import onnx
 
 sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deeplightfield"
+__package__ = "deep_view_syn"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0,
                     help='Which CUDA device to use.')
-parser.add_argument('--model', type=str,
-                    help='Path of model to export')
-parser.add_argument('--batch-size', type=int,
+parser.add_argument('--batch-size', type=str,
                     help='Resolution')
 parser.add_argument('--outdir', type=str, default='./',
                     help='Output directory')
+parser.add_argument('model', type=str,
+                    help='Path of model to export')
 opt = parser.parse_args()
 
 # Select device
@@ -29,13 +29,18 @@ from .my import device
 from .my import netio
 from .my import util
 
+dir_path, model_file = os.path.split(opt.model)
+batch_size = eval(opt.batch_size)
+os.chdir(dir_path)
+
+config = SphericalViewSynConfig()
 
 def load_net(path):
     name = os.path.splitext(os.path.basename(path))[0]
-    config = SphericalViewSynConfig()
-    config.load_by_name(name.split('@')[1])
+    config.from_id(name)
     config.SAMPLE_PARAMS['spherical'] = True
     config.SAMPLE_PARAMS['perturb_sample'] = False
+    config.SAMPLE_PARAMS['n_samples'] = 4
     config.print()
     net = MslNet(config.FC_PARAMS, config.SAMPLE_PARAMS, config.GRAY,
                  config.N_ENCODE_DIM, export_mode=True).to(device.GetDevice())
@@ -46,16 +51,16 @@ def load_net(path):
 if __name__ == "__main__":
     with torch.no_grad():
         # Load model
-        net, name = load_net(opt.model)
+        net, name = load_net(model_file)
 
         # Input to the model
-        rays_o = torch.empty(opt.batch_size, 3, device=device.GetDevice())
-        rays_d = torch.empty(opt.batch_size, 3, device=device.GetDevice())
+        rays_o = torch.empty(batch_size, 3, device=device.GetDevice())
+        rays_d = torch.empty(batch_size, 3, device=device.GetDevice())
 
         util.CreateDirIfNeed(opt.outdir)
 
         # Export the model
-        outpath = os.path.join(opt.outdir, name + ".onnx")
+        outpath = os.path.join(opt.outdir, config.to_id() + ".onnx")
         onnx.export(
             net,                 # model being run
             (rays_o, rays_d),    # model input (or a tuple for multiple inputs)

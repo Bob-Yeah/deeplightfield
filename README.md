@@ -1,4 +1,4 @@
-# deeplightfield
+# deep_view_syn
 
 Requirement:
 

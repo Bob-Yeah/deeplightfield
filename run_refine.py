@@ -5,7 +5,6 @@ import os
 import sys
 import torch
 import torch.nn.functional as nn_f
-from torch.utils.data import DataLoader
 from tensorboardX.writer import SummaryWriter
 
 sys.path.append(os.path.abspath(sys.path[0] + '/../'))
@@ -50,8 +49,7 @@ from .my import util
 from .my import netio
 from .my import device
 from .my import color_mode
-#from .upsampling.SubPixelCNN.solver import SubPixelTrainer as Solver
-from .upsampling.SRCNN.solver import SRCNNTrainer as Solver
+from .refine_net import *
 from .data.upsampling import UpsamplingDataset
 from .data.loader import FastDataLoader
 
@@ -71,7 +69,7 @@ def train():
                                           drop_last=False)
     trainer = Solver(args, training_data_loader, training_data_loader,
                      SummaryWriter(run_dir))
-    trainer.build_model(3 if args.color == color_mode.RGB else 1)
+    trainer.build_model()
     iters = 0
     for epoch in range(1, args.nEpochs + 1):
         print("\n===> Epoch {} starts:".format(epoch))
@@ -91,12 +89,12 @@ def test():
                                           drop_last=False)
     trainer = Solver(args, training_data_loader, training_data_loader,
                      SummaryWriter(run_dir))
-    trainer.build_model(3 if args.color == color_mode.RGB else 1)
+    trainer.build_model()
     netio.LoadNet(args.test, trainer.model)
     for idx, input, _ in training_data_loader:
         if args.color == color_mode.YCbCr:
             output_y = trainer.model(input[:, -1:])
-            output_cbcr = nn_f.upsample(input[:, 0:2], scale_factor=2)
+            output_cbcr = input[:, 0:2]
             output = util.ycbcr2rgb(torch.cat([output_cbcr, output_y], -3))
         else:
             output = trainer.model(input)
