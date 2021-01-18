@@ -26,7 +26,7 @@ class Foveation(object):
         return self
 
     def synthesis(self, layers: List[torch.Tensor],
-                  normalized_fovea_center: Tuple[float, float]) -> torch.Tensor:
+                  fovea_center: Tuple[float, float]) -> torch.Tensor:
         """
         Generate foveated retinal image by blending fovea layers
         **Note: current implementation only support two fovea layers**
@@ -37,8 +37,8 @@ class Foveation(object):
         output: torch.Tensor = nn_f.interpolate(layers[-1], self.out_res,
                                                 mode='bilinear', align_corners=False)
         c = torch.tensor([
-            normalized_fovea_center[0] * self.out_res[1],
-            normalized_fovea_center[1] * self.out_res[0]
+            fovea_center[0] + self.out_res[1] / 2,
+            fovea_center[1] + self.out_res[0] / 2
         ], device=self.coords.device)
         for i in range(self.n_layers - 2, -1, -1):
             if layers[i] == None:
@@ -60,24 +60,6 @@ class Foveation(object):
         length = util.Fov2Length(self.fov_list[-1])
         k = length_i / length
         return int(math.ceil(self.out_res[0] * k))
-
-    def get_layer_region_in_final_image(self, i: int,
-                                        normalized_fovea_center: Tuple[float, float]) -> Tuple[slice, slice]:
-        """
-        Get region of fovea layer i in final image
-
-        :param i: index of layer
-        :return: tuple of slice objects stores the start and end of region in horizontal and vertical
-        """
-        roi_size = self.get_layer_size_in_final_image(i)
-        roi_center = (int(self.out_res[1] * normalized_fovea_center[0]),
-                      int(self.out_res[0] * normalized_fovea_center[1]))
-        roi_offset_y = roi_center[1] - roi_size // 2
-        roi_offset_x = roi_center[0] - roi_size // 2
-        return (...,
-                slice(roi_offset_y, roi_offset_y + roi_size),
-                slice(roi_offset_x, roi_offset_x + roi_size)
-                )
 
     def _gen_layer_blendmap(self, i: int) -> torch.Tensor:
         """

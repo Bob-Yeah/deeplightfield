@@ -85,7 +85,7 @@ class SphericalViewSynDataset(object):
         if calculate_rays:
             # rays_o & rays_d are both (N, H, W, 3)
             self.rays_o, self.rays_d = self.cam_params.get_global_rays(
-                self.view_centers, self.view_rots)
+                view.Trans(self.view_centers, self.view_rots))
             self.patched_rays_o = self.rays_o
             self.patched_rays_d = self.rays_d
 

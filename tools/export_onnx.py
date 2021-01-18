@@ -5,8 +5,8 @@ import torch
 import torch.optim
 from torch import onnx
 
-sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deep_view_syn"
+sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
+__package__ = "deep_view_syn.tools"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0,
@@ -23,11 +23,10 @@ opt = parser.parse_args()
 torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-from .msl_net import MslNet
-from .configs.spherical_view_syn import SphericalViewSynConfig
-from .my import device
-from .my import netio
-from .my import util
+from ..configs.spherical_view_syn import SphericalViewSynConfig
+from ..my import device
+from ..my import netio
+from ..my import util
 
 dir_path, model_file = os.path.split(opt.model)
 batch_size = eval(opt.batch_size)
@@ -42,8 +41,7 @@ def load_net(path):
     config.SAMPLE_PARAMS['perturb_sample'] = False
     config.SAMPLE_PARAMS['n_samples'] = 4
     config.print()
-    net = MslNet(config.FC_PARAMS, config.SAMPLE_PARAMS, config.GRAY,
-                 config.N_ENCODE_DIM, export_mode=True).to(device.GetDevice())
+    net = config.create_net().to(device.GetDevice())
     netio.LoadNet(path, net)
     return net, name
 

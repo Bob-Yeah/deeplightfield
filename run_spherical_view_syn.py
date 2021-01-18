@@ -1,11 +1,8 @@
-import math
 import sys
 import os
 import argparse
 import torch
 import torch.optim
-import torchvision
-import numpy as np
 from tensorboardX import SummaryWriter
 from torch import nn
 
@@ -21,6 +18,8 @@ parser.add_argument('--config-id', type=str,
                     help='Net config id')
 parser.add_argument('--dataset', type=str, required=True,
                     help='Dataset description file')
+parser.add_argument('--cont', type=str,
+                    help='Continue train on model file')
 parser.add_argument('--epochs', type=int,
                     help='Max epochs for train')
 parser.add_argument('--test', type=str,
@@ -37,6 +36,8 @@ parser.add_argument('--output-video', action='store_true',
                     help='Output test results as video')
 parser.add_argument('--perf', action='store_true',
                     help='Test performance')
+parser.add_argument('--simple-log', action='store_true', help='Simple log')
+
 opt = parser.parse_args()
 if opt.res:
     opt.res = tuple(int(s) for s in opt.res.split('x'))
@@ -49,11 +50,10 @@ from .my import netio
 from .my import util
 from .my import device
 from .my import loss
+from .my.progress_bar import progress_bar
 from .my.simple_perf import SimplePerf
 from .data.spherical_view_syn import *
 from .data.loader import FastDataLoader
-from .msl_net import MslNet
-from .spher_net import SpherNet
 from .configs.spherical_view_syn import SphericalViewSynConfig
 
 
@@ -68,8 +68,8 @@ EVAL_TIME_PERFORMANCE = False
 
 # Train
 BATCH_SIZE = 4096
-EPOCH_RANGE = range(0, opt.epochs if opt.epochs else 500)
-SAVE_INTERVAL = 50
+EPOCH_RANGE = range(0, opt.epochs if opt.epochs else 300)
+SAVE_INTERVAL = 10
 
 # Test
 TEST_BATCH_SIZE = 1
@@ -92,13 +92,20 @@ if opt.test:
         output_dir = run_dir + 'output/%s/%s_s%d/' % \
             (test_net_name, data_desc_name, opt.test_samples)
 else:
-    if opt.config:
-        config.load(opt.config)
-    if opt.config_id:
-        config.from_id(opt.config_id)
     data_dir = os.path.dirname(data_desc_path) + '/'
-    run_id = config.to_id()
-    run_dir = data_dir + run_id + '/'
+    if opt.cont:
+        train_net_name = os.path.splitext(os.path.basename(opt.cont))[0]
+        EPOCH_RANGE = range(int(train_net_name[12:]), EPOCH_RANGE.stop)
+        run_dir = os.path.dirname(opt.cont) + '/'
+        run_id = os.path.basename(run_dir[:-1])
+        config.from_id(run_id)
+    else:
+        if opt.config:
+            config.load(opt.config)
+        if opt.config_id:
+            config.from_id(opt.config_id)
+        run_id = config.to_id()
+        run_dir = data_dir + run_id + '/'
     log_dir = run_dir + 'log/'
     output_dir = None
     train_mode = True
@@ -113,26 +120,6 @@ if not train_mode:
 config.SAMPLE_PARAMS['perturb_sample'] = \
     config.SAMPLE_PARAMS['perturb_sample'] and train_mode
 
-NETS = {
-    'msl': lambda: MslNet(
-        fc_params=config.FC_PARAMS,
-        sampler_params=(config.SAMPLE_PARAMS.update(
-            {'spherical': True}), config.SAMPLE_PARAMS)[1],
-        color=config.COLOR,
-        encode_to_dim=config.N_ENCODE_DIM),
-    'nerf': lambda: MslNet(
-        fc_params=config.FC_PARAMS,
-        sampler_params=(config.SAMPLE_PARAMS.update(
-            {'spherical': False}), config.SAMPLE_PARAMS)[1],
-        color=config.COLOR,
-        encode_to_dim=config.N_ENCODE_DIM),
-    'spher': lambda: SpherNet(
-        fc_params=config.FC_PARAMS,
-        color=config.COLOR,
-        translation=not ROT_ONLY,
-        encode_to_dim=config.N_ENCODE_DIM)
-}
-
 LOSSES = {
     'mse': lambda: nn.MSELoss(),
     'mse_grad': lambda: loss.CombinedLoss(
@@ -140,7 +127,7 @@ LOSSES = {
 }
 
 # Initialize model
-model = NETS[config.NET_TYPE]().to(device.GetDevice())
+model = config.create_net().to(device.GetDevice())
 loss_mse = nn.MSELoss().to(device.GetDevice())
 loss_grad = loss.GradLoss().to(device.GetDevice())
 
@@ -148,6 +135,10 @@ loss_grad = loss.GradLoss().to(device.GetDevice())
 def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
     sub_iters = 0
     iters_in_epoch = len(data_loader)
+    loss_min = 1e5
+    loss_max = 0
+    loss_avg = 0
+    perf = SimplePerf(opt.simple_log)
     for _, gt, rays_o, rays_d in data_loader:
         patch = (len(gt.size()) == 4)
         gt = gt.to(device.GetDevice())
@@ -175,25 +166,26 @@ def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
         optimizer.step()
         perf.Checkpoint("Update")
 
-        if patch:
-            print("Epoch: %d, Iter: %d(%d/%d), Loss MSE: %f, Loss Grad: %f" %
-                  (epoch, iters, sub_iters, iters_in_epoch,
-                   loss_mse_value.item(), loss_grad_value.item()))
-        else:
-            print("Epoch: %d, Iter: %d(%d/%d), Loss MSE: %f" %
-                  (epoch, iters, sub_iters, iters_in_epoch, loss_mse_value.item()))
+        loss_value = loss_value.item()
+        loss_min = min(loss_min, loss_value)
+        loss_max = max(loss_max, loss_value)
+        loss_avg = (loss_avg * sub_iters + loss_value) / (sub_iters + 1)
+        if not opt.simple_log:
+            progress_bar(sub_iters, iters_in_epoch,
+                        "Loss: %.2e (%.2e/%.2e/%.2e)" % (loss_value, loss_min, loss_avg, loss_max),
+                        "Epoch {:<3d}".format(epoch))
 
         # Write tensorboard logs.
-        writer.add_scalar("loss mse", loss_mse_value, iters)
-        if patch:
-            writer.add_scalar("loss grad", loss_grad_value, iters)
-        if patch and iters % 100 == 0:
-            output_vs_gt = torch.cat([out[0:4], gt[0:4]], 0).detach()
-            writer.add_image("Output_vs_gt", torchvision.utils.make_grid(
-                output_vs_gt, nrow=4).cpu().numpy(), iters)
+        writer.add_scalar("loss mse", loss_value, iters)
+        # if patch and iters % 100 == 0:
+        #    output_vs_gt = torch.cat([out[0:4], gt[0:4]], 0).detach()
+        #    writer.add_image("Output_vs_gt", torchvision.utils.make_grid(
+        #        output_vs_gt, nrow=4).cpu().numpy(), iters)
 
         iters += 1
         sub_iters += 1
+    if opt.simple_log:
+        perf.Checkpoint('Epoch %d (%.2e/%.2e/%.2e)' % (epoch, loss_min, loss_avg, loss_max), True)
     return iters
 
 
@@ -211,13 +203,18 @@ def train():
         pin_memory=True)
 
     # 2. Initialize components
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=config.OPT_DECAY)
     loss = 0  # LOSSES[config.LOSS]().to(device.GetDevice())
 
     if EPOCH_RANGE.start > 0:
         iters = netio.LoadNet('%smodel-epoch_%d.pth' % (run_dir, EPOCH_RANGE.start),
                               model, solver=optimizer)
     else:
+        if config.NORMALIZE:
+            for _, _, rays_o, rays_d in train_data_loader:
+                model.update_normalize_range(rays_o, rays_d)
+            print('Depth/diopter range: ', model.depth_range)
+            print('Angle range: ', model.angle_range / 3.14159 * 180)
         iters = 0
     epoch = None
 
@@ -228,12 +225,10 @@ def train():
     util.CreateDirIfNeed(log_dir)
 
     perf = SimplePerf(EVAL_TIME_PERFORMANCE, start=True)
-    perf_epoch = SimplePerf(True, start=True)
     writer = SummaryWriter(log_dir)
 
     print("Begin training...")
     for epoch in EPOCH_RANGE:
-        perf_epoch.Checkpoint("Epoch")
         iters = train_loop(train_data_loader, optimizer, loss,
                            perf, writer, epoch, iters)
         # Save checkpoint

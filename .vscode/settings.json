@@ -1,2 +1,6 @@
 {
+    "python.pythonPath": "/home/dengnc/miniconda3/envs/pytorch/bin/python",
+    "files.watcherExclude": {
+        "**/data/**": true
+    }
 }

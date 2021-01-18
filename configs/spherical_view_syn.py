@@ -2,6 +2,10 @@ import os
 import importlib
 from os.path import join
 from ..my import color_mode
+from ..nets.msl_net import MslNet
+from ..nets.msl_net_new import NewMslNet
+from ..nets.spher_net import SpherNet
+
 
 
 class SphericalViewSynConfig(object):
@@ -14,6 +18,9 @@ class SphericalViewSynConfig(object):
         # Net parameters
         self.NET_TYPE = 'msl'
         self.N_ENCODE_DIM = 10
+        self.NORMALIZE = False
+        self.DIR_AS_INPUT = False
+        self.OPT_DECAY = 0
         self.FC_PARAMS = {
             'nf': 256,
             'n_layers': 8,
@@ -49,16 +56,22 @@ class SphericalViewSynConfig(object):
             '%d' % val
             for val in self.FC_PARAMS['skips']
         ]) if len(self.FC_PARAMS['skips']) > 0 else ""
-        depth_id = "_d%d-%d" % (self.SAMPLE_PARAMS['depth_range'][0],
+        depth_id = "_d%.2f-%.2f" % (self.SAMPLE_PARAMS['depth_range'][0],
                                 self.SAMPLE_PARAMS['depth_range'][1])
         samples_id = '_s%d' % self.SAMPLE_PARAMS['n_samples']
+        opt_decay_id = '_decay%.1e' % self.OPT_DECAY if self.OPT_DECAY > 1e-5 else ''
         neg_flags = '%s%s%s' % (
             'p' if not self.SAMPLE_PARAMS['perturb_sample'] else '',
             'l' if not self.SAMPLE_PARAMS['lindisp'] else '',
             'i' if not self.SAMPLE_PARAMS['inverse_r'] else ''
         )
         neg_flags = '_~' + neg_flags if neg_flags != '' else ''
-        return "%s@%s%s%s%s%s%s%s" % (self.name, net_type_id, encode_id, fc_id, skip_id, depth_id, samples_id, neg_flags)
+        pos_flags = '%s%s' % (
+            'n' if self.NORMALIZE else '',
+            'd' if self.DIR_AS_INPUT else '',
+        )
+        pos_flags = '_+' + pos_flags if pos_flags != '' else ''
+        return "%s@%s%s%s%s%s%s%s%s%s" % (self.name, net_type_id, encode_id, fc_id, skip_id, depth_id, samples_id, opt_decay_id, neg_flags, pos_flags)
 
     def from_id(self, id: str):
         id_splited = id.split('@')
@@ -66,9 +79,6 @@ class SphericalViewSynConfig(object):
             self.name = id_splited[0]
         segs = id_splited[-1].split('_')
         for i, seg in enumerate(segs):
-            if seg.startswith('e'):  # Encode
-                self.N_ENCODE_DIM = int(seg[1:])
-                continue
             if seg.startswith('fc'):  # Full-connected network parameters
                 self.FC_PARAMS['nf'], self.FC_PARAMS['n_layers'] = (
                     int(str) for str in seg[2:].split('x'))
@@ -76,6 +86,12 @@ class SphericalViewSynConfig(object):
             if seg.startswith('skip'):  # Skip connection
                 self.FC_PARAMS['skips'] = [int(str)
                                            for str in seg[4:].split(',')]
+                continue
+            if seg.startswith('decay'):
+                self.OPT_DECAY = float(seg[5:])
+                continue
+            if seg.startswith('e'):  # Encode
+                self.N_ENCODE_DIM = int(seg[1:])
                 continue
             if seg.startswith('d'):  # Depth range
                 self.SAMPLE_PARAMS['depth_range'] = tuple(
@@ -85,9 +101,18 @@ class SphericalViewSynConfig(object):
                 self.SAMPLE_PARAMS['n_samples'] = int(seg[1:])
                 continue
             if seg.startswith('~'):  # Negative flags
-                self.SAMPLE_PARAMS['perturb_sample'] = (seg.find('p') < 0)
-                self.SAMPLE_PARAMS['lindisp'] = (seg.find('l') < 0)
-                self.SAMPLE_PARAMS['inverse_r'] = (seg.find('i') < 0)
+                if seg.find('p') >= 0:
+                    self.SAMPLE_PARAMS['perturb_sample'] = False
+                if seg.find('l') >= 0:
+                    self.SAMPLE_PARAMS['lindisp'] = False
+                if seg.find('i') >= 0:
+                    self.SAMPLE_PARAMS['inverse_r'] = False
+                continue
+            if seg.startswith('+'):  # Positive flags
+                if seg.find('n') >= 0:
+                    self.NORMALIZE = True
+                if seg.find('d') >= 0:
+                    self.DIR_AS_INPUT = True
                 continue
             if i == 0:  # NetType
                 self.NET_TYPE, color_str = seg.split('-')
@@ -98,6 +123,41 @@ class SphericalViewSynConfig(object):
         print('==== Config %s ====' % self.name)
         print('Net type: ', self.NET_TYPE)
         print('Encode dim: ', self.N_ENCODE_DIM)
+        print('Optimizer decay: ', self.OPT_DECAY)
+        print('Normalize: ', self.NORMALIZE)
+        print('Direction as input: ', self.DIR_AS_INPUT)
         print('Full-connected network parameters:', self.FC_PARAMS)
         print('Sample parameters', self.SAMPLE_PARAMS)
         print('==========================')
+
+    def create_net(self):
+        return net_builder[self.NET_TYPE](self)
+
+
+net_builder = {
+    'msl': lambda config: MslNet(
+        fc_params=config.FC_PARAMS,
+        sampler_params=(config.SAMPLE_PARAMS.update(
+            {'spherical': True}), config.SAMPLE_PARAMS)[1],
+        normalize_coord=config.NORMALIZE,
+        dir_as_input=config.DIR_AS_INPUT,
+        color=config.COLOR,
+        encode_to_dim=config.N_ENCODE_DIM),
+    'nmsl': lambda config: NewMslNet(
+        fc_params=config.FC_PARAMS,
+        sampler_params=(config.SAMPLE_PARAMS.update(
+            {'spherical': True}), config.SAMPLE_PARAMS)[1],
+        normalize_coord=config.NORMALIZE,
+        dir_as_input=config.DIR_AS_INPUT,
+        color=config.COLOR,
+        encode_to_dim=config.N_ENCODE_DIM),
+    'nnmsl': lambda config: NewMslNet(
+        fc_params=config.FC_PARAMS,
+        sampler_params=(config.SAMPLE_PARAMS.update(
+            {'spherical': True}), config.SAMPLE_PARAMS)[1],
+        normalize_coord=config.NORMALIZE,
+        dir_as_input=config.DIR_AS_INPUT,
+        not_same_net=True,
+        color=config.COLOR,
+        encode_to_dim=config.N_ENCODE_DIM)
+}

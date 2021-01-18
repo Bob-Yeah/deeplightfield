@@ -1,12 +1,12 @@
 import sys
 import time
 
-TOTAL_BAR_LENGTH = 80
+TOTAL_BAR_LENGTH = 50
 LAST_T = time.time()
 BEGIN_T = LAST_T
 
 
-def progress_bar(current, total, msg=None):
+def progress_bar(current, total, msg=None, premsg=None):
     global LAST_T, BEGIN_T
     if current == 0:
         BEGIN_T = time.time()  # Reset for new bar.
@@ -14,21 +14,25 @@ def progress_bar(current, total, msg=None):
     current_len = int(TOTAL_BAR_LENGTH * (current + 1) / total)
     rest_len = int(TOTAL_BAR_LENGTH - current_len) - 1
 
-    sys.stdout.write(' %d/%d' % (current + 1, total))
-    sys.stdout.write(' [')
+    if premsg:
+        sys.stdout.write(premsg)
+        sys.stdout.write(' ')
+    sys.stdout.write('[')
     for i in range(current_len):
         sys.stdout.write('=')
-    sys.stdout.write('>')
+    if current_len < TOTAL_BAR_LENGTH:
+        sys.stdout.write('>')
     for i in range(rest_len):
         sys.stdout.write('.')
     sys.stdout.write(']')
+    sys.stdout.write(' %d/%d' % (current + 1, total))
 
     current_time = time.time()
     step_time = current_time - LAST_T
     LAST_T = current_time
     total_time = current_time - BEGIN_T
 
-    time_used = '  Step: %s' % format_time(step_time)
+    time_used = ' | Step: %s' % format_time(step_time)
     time_used += ' | Tot: %s' % format_time(total_time)
     if msg:
         time_used += ' | ' + msg
@@ -37,9 +41,9 @@ def progress_bar(current, total, msg=None):
     sys.stdout.write(msg)
 
     if current < total - 1:
-        sys.stdout.write('\r')
+        sys.stdout.write('   \r')
     else:
-        sys.stdout.write('\n')
+        sys.stdout.write('   \n')
     sys.stdout.flush()
 
 
@@ -67,10 +71,10 @@ def format_time(seconds):
         output += str(minutes) + 'm'
         time_index += 1
     if seconds_final > 0 and time_index <= 2:
-        output += str(seconds_final) + 's'
+        output += '%02ds' % seconds_final
         time_index += 1
     if millis > 0 and time_index <= 2:
-        output += str(millis) + 'ms'
+        output += '%03dms' % millis
         time_index += 1
     if output == '':
         output = '0ms'

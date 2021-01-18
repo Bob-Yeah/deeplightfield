@@ -1,4 +1,0 @@
-[Net Parameters]
-aaa = 1
-bbb = 'abc'
-ccc = (2,3)

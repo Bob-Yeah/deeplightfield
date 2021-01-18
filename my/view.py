@@ -1,4 +1,4 @@
-from typing import Mapping, Tuple, Union
+from typing import List, Mapping, Tuple, Union
 import torch
 from . import util
 
@@ -65,8 +65,7 @@ class CameraParam(object):
             rays = rays.flatten(0, 1)
         return rays
 
-    def get_global_rays(self, t: torch.Tensor, r: torch.Tensor,
-                        flatten=False, norm=True) -> torch.Tensor:
+    def get_global_rays(self, trans, flatten=False, norm=True) -> torch.Tensor:
         """
         [summary]
 
@@ -77,9 +76,9 @@ class CameraParam(object):
         :return: [description]
         """
         rays = self.get_local_rays(flatten, norm)  # (M.., 3)
-        rays_o, _ = torch.broadcast_tensors(t[..., None, :], rays) if flatten \
-            else torch.broadcast_tensors(t[..., None, None, :], rays)  # (N.., M.., 3)
-        rays_d = trans_vector(rays, r)
+        rays_o, _ = torch.broadcast_tensors(trans.t[..., None, :], rays) if flatten \
+            else torch.broadcast_tensors(trans.t[..., None, None, :], rays)  # (N.., M.., 3)
+        rays_d = trans.trans_vector(rays)
         return rays_o, rays_d
 
     def _convert_camera_params(self, input_camera_params: Mapping[str, Union[float, bool]],
@@ -112,6 +111,62 @@ class CameraParam(object):
             camera_params['cx'] *= view_res[1]
             camera_params['cy'] *= view_res[0]
         return camera_params
+
+
+class Trans(object):
+
+    def __init__(self, t: torch.Tensor, r: torch.Tensor) -> None:
+        self.t = t
+        self.r = r
+        if len(self.t.size()) == 1:
+            self.t = self.t[None, :]
+            self.r = self.r[None, :, :]
+
+    def trans_point(self, p: torch.Tensor, inverse=False) -> torch.Tensor:
+        """
+        Transform points by given translation vectors and rotation matrices
+
+        :param p ```Tensor(N.., 3)```: points to transform
+        :param t ```Tensor(M.., 3)```: translation vectors
+        :param r ```Tensor(M.., 3, 3)```: rotation matrices
+        :param inverse: whether perform inverse transform
+        :return ```Tensor(M.., N.., 3)```: transformed points
+        """
+        size_N = list(p.size())[:-1]
+        size_M = list(self.r.size())[:-2]
+        out_size = size_M + size_N + [3]
+        t_size = size_M + [1 for _ in range(len(size_N))] + [3]
+        t = self.t.view(t_size) # (M.., 1.., 3)
+        if inverse:
+            p = (p - t).view(size_M + [-1, 3])
+            r = self.r
+        else:
+            p = p.view(-1, 3)
+            r = self.r.movedim(-1, -2) # Transpose rotation matrices
+        out = torch.matmul(p, r).view(out_size)
+        if not inverse:
+            out = out + t
+        return out
+
+    def trans_vector(self, v: torch.Tensor, inverse=False) -> torch.Tensor:
+        """
+        Transform vectors by given translation vectors and rotation matrices
+
+        :param v ```Tensor(N.., 3)```: vectors to transform
+        :param r ```Tensor(M.., 3, 3)```: rotation matrices
+        :param inverse: whether perform inverse transform
+        :return ```Tensor(M.., N.., 3)```: transformed vectors
+        """
+        out_size = list(self.r.size())[:-2] + list(v.size())[:-1] + [3]
+        r = self.r if inverse else self.r.movedim(-1, -2) # Transpose rotation matrices
+        out = torch.matmul(v.view(-1, 3), r).view(out_size)
+        return out
+    
+    def size(self) -> List[int]:
+        return list(self.t.size()[:-1])
+    
+    def get(self, *index):
+        return Trans(self.t[index], self.r[index])
 
 
 def trans_point(p: torch.Tensor, t: torch.Tensor, r: torch.Tensor, inverse=False) -> torch.Tensor:

@@ -1,11 +1,11 @@
 import sys
 import os
-sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deep_view_syn"
+sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
+__package__ = "deep_view_syn.tools"
 
 import argparse
 from PIL import Image
-from .my import util
+from ..my import util
 
 
 def batch_scale(src, target, size):

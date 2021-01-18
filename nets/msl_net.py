@@ -1,10 +1,11 @@
 from typing import Tuple
+import math
 import torch
 import torch.nn as nn
-from .my import net_modules
-from .my import util
-from .my import device
-from .my import color_mode
+from ..my import net_modules
+from ..my import util
+from ..my import device
+from ..my import color_mode
 
 
 rand_gen = torch.Generator(device=device.GetDevice())
@@ -112,7 +113,7 @@ class Rendering(nn.Module):
         # dists: (N_rays, N_samples)
         dists = z_vals[..., 1:] - z_vals[..., :-1]
         last_dist = z_vals[..., 0:1] * 0 + 1e10
-        
+
         dists = torch.cat([
             dists, last_dist
         ], -1)
@@ -145,19 +146,17 @@ class Sampler(nn.Module):
         :param lindisp: If True, sample linearly in inverse depth rather than in depth
         """
         super().__init__()
-        if lindisp:
-            self.r = 1 / torch.linspace(1 / depth_range[0], 1 / depth_range[1],
-                                        n_samples, device=device.GetDevice())
-        else:
-            self.r = torch.linspace(depth_range[0], depth_range[1],
-                                    n_samples, device=device.GetDevice())
+        self.lindisp = lindisp
+        if self.lindisp:
+            depth_range = (1 / depth_range[0], 1 / depth_range[1])
+        self.r = torch.linspace(depth_range[0], depth_range[1],
+                                n_samples, device=device.GetDevice())
+        step = (depth_range[1] - depth_range[0]) / (n_samples - 1)
         self.perturb_sample = perturb_sample
         self.spherical = spherical
         self.inverse_r = inverse_r
-        if perturb_sample:
-            mids = .5 * (self.r[1:] + self.r[:-1])
-            self.upper = torch.cat([mids, self.r[-1:]], -1)
-            self.lower = torch.cat([self.r[:1], mids], -1)
+        self.upper = torch.clamp_min(self.r + step / 2, 0)
+        self.lower = torch.clamp_min(self.r - step / 2, 0)
 
     def forward(self, rays_o, rays_d):
         """
@@ -177,18 +176,26 @@ class Sampler(nn.Module):
             r = self.lower + (self.upper - self.lower) * t_rand
         else:
             r = self.r
+        if self.lindisp:
+            r = torch.reciprocal(r)
 
         if self.spherical:
             pts, depths = RaySphereIntersect(rays_o, rays_d, r)
             sphers = util.CartesianToSpherical(pts, inverse_r=self.inverse_r)
-            return sphers, depths
+            return sphers, pts, depths
         else:
             return rays_o[..., None, :] + rays_d[..., None, :] * r[..., None], r
 
+# x>0, y>0 -> (y, -x)
+# x<0, y>0 -> (-y, x)
+# x<0, y<0 -> (y, -x)
+# x>0, y<0 -> (-y, x)
 
 class MslNet(nn.Module):
 
     def __init__(self, fc_params, sampler_params,
+                 normalize_coord: bool,
+                 dir_as_input: bool,
                  color: int = color_mode.RGB,
                  encode_to_dim: int = 0,
                  export_mode: bool = False):
@@ -197,7 +204,8 @@ class MslNet(nn.Module):
 
         :param fc_params: parameters for full-connection network
         :param sampler_params: parameters for sampler
-        :param gray: is grayscale mode
+        :param normalize_coord: whether normalize the spherical coords to [0, 2pi] before encode
+        :param color: color mode
         :param encode_to_dim: encode input to number of dimensions
         """
         super().__init__()
@@ -209,7 +217,10 @@ class MslNet(nn.Module):
         self.sampler = Sampler(**sampler_params)
         self.rendering = Rendering()
         self.export_mode = export_mode
-        if color == color_mode.YCbCr:
+        self.normalize_coord = normalize_coord
+        self.dir_as_input = dir_as_input
+        self.color = color
+        if self.color == color_mode.YCbCr:
             self.net1 = net_modules.FcNet(
                 in_chns=fc_params['in_chns'],
                 out_chns=fc_params['nf'] + 2,
@@ -221,9 +232,52 @@ class MslNet(nn.Module):
                 nf=fc_params['nf'],
                 n_layers=1)
             self.net = None
+        elif self.dir_as_input:
+            self.input_encoder2 = net_modules.InputEncoder.Get(4, 2)
+            self.net1 = net_modules.FcNet(
+                in_chns=fc_params['in_chns'],
+                out_chns=fc_params['nf'],
+                nf=fc_params['nf'],
+                n_layers=fc_params['n_layers'])
+            self.net2 = net_modules.FcNet(
+                in_chns=fc_params['nf'] + self.input_encoder2.out_dim,
+                out_chns=fc_params['out_chns'],
+                nf=fc_params['nf'],
+                n_layers=1)
+            self.net = None
         else:
             self.net = net_modules.FcNet(**fc_params)
+        if self.normalize_coord:
+            self.register_buffer('angle_range', torch.tensor(
+                [[1e5, 1e5], [-1e5, -1e5]]))
+            self.register_buffer('depth_range', torch.tensor([
+                self.sampler.lower[0], self.sampler.upper[-1]
+            ]))
 
+    def update_normalize_range(self, rays_o: torch.Tensor, rays_d: torch.Tensor):
+        coords, _, _ = self.sampler(rays_o, rays_d)
+        coords = coords[..., 1:].view(-1, 2)
+        self.angle_range = torch.stack([
+            torch.cat([coords, self.angle_range[0:1]]).amin(0),
+            torch.cat([coords, self.angle_range[1:2]]).amax(0)
+        ])
+
+    def calc_local_dir(self, rays_d, coords, pts: torch.Tensor):
+        """
+        [summary]
+
+        :param rays_d ```Tensor(B, 3)```: 
+        :param coords ```Tensor(B, N, 3)```: 
+        :param pts ```Tensor(B, N, 3)```: 
+        :return ```Tensor(B, N, 2)```
+        """
+        local_z = pts / pts.norm(dim=-1, keepdim=True)
+        local_x = util.SphericalToCartesian(coords + torch.tensor([0, 0.1 / 180 * math.pi, 0], device=coords.device)) - pts
+        local_x = local_x / local_x.norm(dim=-1, keepdim=True)
+        local_y = torch.cross(local_x, local_z, -1)
+        local_rot = torch.stack([local_x, local_y, local_z], dim=-2) # (B, N, 3, 3)
+        return util.CartesianToSpherical(torch.matmul(rays_d[:, None, None, :], local_rot)).squeeze(-2)[..., 1:3]
+        
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor,
                 ret_depth: bool = False) -> torch.Tensor:
         """
@@ -233,19 +287,30 @@ class MslNet(nn.Module):
         :param rays_d ```Tensor(B, 3)```: rays' direction
         :return: ```Tensor(B, C)``, inferred images/pixels
         """
-        coords, depths = self.sampler(rays_o, rays_d)
+        coords, pts, depths = self.sampler(rays_o, rays_d)
+
+        if self.dir_as_input:
+            dirs = self.calc_local_dir(rays_d, coords, pts)
+
+        if self.normalize_coord: # Normalize coords to [0, 2pi]
+            range = torch.cat([self.depth_range.view(2, 1), self.angle_range], 1)
+            coords = (coords - range[0]) / (range[1] - range[0]) * 2 * math.pi
         encoded = self.input_encoder(coords)
 
-        if not self.net:
+        if self.color == color_mode.YCbCr:
             mid_output = self.net1(encoded)
             net2_output = self.net2(mid_output[..., :-2])
             raw = torch.cat([
                 mid_output[..., -2:],
                 net2_output
             ], -1)
+        elif self.dir_as_input:
+            encoded_dirs = self.input_encoder2(dirs)
+            #print(encoded.size(), self.net1(encoded).size(), encoded_dirs.size())
+            raw = self.net2(torch.cat([self.net1(encoded), encoded_dirs], -1))
         else:
             raw = self.net(encoded)
-        
+
         if self.export_mode:
             colors, alphas = self.rendering.raw2color(raw, depths)
             return torch.cat([colors, alphas[..., None]], -1)
@@ -254,5 +319,5 @@ class MslNet(nn.Module):
             color_map, _, _, _, depth_map = self.rendering(
                 raw, depths, ret_extra=True)
             return color_map, depth_map
-        
+
         return self.rendering(raw, depths)
