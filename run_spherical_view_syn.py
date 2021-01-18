@@ -7,7 +7,7 @@ from tensorboardX import SummaryWriter
 from torch import nn
 
 sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deep_view_syn"
+__package__ = "deeplightfield"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=3,
@@ -138,7 +138,7 @@ def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
     loss_min = 1e5
     loss_max = 0
     loss_avg = 0
-    perf = SimplePerf(opt.simple_log)
+    perf1 = SimplePerf(opt.simple_log, True)
     for _, gt, rays_o, rays_d in data_loader:
         patch = (len(gt.size()) == 4)
         gt = gt.to(device.GetDevice())
@@ -185,7 +185,7 @@ def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
         iters += 1
         sub_iters += 1
     if opt.simple_log:
-        perf.Checkpoint('Epoch %d (%.2e/%.2e/%.2e)' % (epoch, loss_min, loss_avg, loss_max), True)
+        perf1.Checkpoint('Epoch %d (%.2e/%.2e/%.2e)' % (epoch, loss_min, loss_avg, loss_max), True)
     return iters
 
 
