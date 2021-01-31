@@ -161,6 +161,7 @@ def CreateDirIfNeed(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
+
 def get_angle(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
     angle = -torch.atan(x / y) + (y < 0) * math.pi + 0.5 * math.pi
     return angle
@@ -198,6 +199,27 @@ def SphericalToCartesian(spher: torch.Tensor) -> torch.Tensor:
     y = rho * cos_theta_phi[..., 1]
     z = rho * sin_theta_phi[..., 0] * sin_theta_phi[..., 1]
     return torch.stack([x, y, z], dim=-1)
+
+
+def RaySphereIntersect(p: torch.Tensor, v: torch.Tensor, r: torch.Tensor) -> torch.Tensor:
+    """
+    Calculate intersections of each rays and each spheres
+
+    :param p ```Tensor(B, 3)```: positions of rays
+    :param v ```Tensor(B, 3)```: directions of rays
+    :param r ```Tensor(N)```: , radius of spheres
+    :return ```Tensor(B, N, 3)```: points of intersection
+    :return ```Tensor(B, N)```: depths of intersection along ray
+    """
+    # p, v: Expand to (B, 1, 3)
+    p = p.unsqueeze(1)
+    v = v.unsqueeze(1)
+    # pp, vv, pv: (B, 1)
+    pp = (p * p).sum(dim=2)
+    vv = (v * v).sum(dim=2)
+    pv = (p * v).sum(dim=2)
+    depths = (((pv * pv - vv * (pp - r * r)).sqrt() - pv) / vv)
+    return p + depths[..., None] * v, depths
 
 
 def GetDepthLayers(depth_range: Tuple[float, float], n_layers: int) -> List[float]:
@@ -287,6 +309,7 @@ def generate_video(frames: torch.Tensor, path: str, fps: float,
     frames = frames.expand(repeat, -1, -1, -1, 3).flatten(0, 1)
     torchvision.io.write_video(path, frames, fps, video_codec)
 
+
 def is_image_file(filename):
     return any(filename.endswith(extension) for extension in [".png", ".jpg", ".jpeg"])
 
@@ -296,6 +319,7 @@ def save_2d_tensor(path, x):
         csv_writer = csv.writer(f)
         for i in range(x.shape[0]):
             csv_writer.writerow(x[i])
+
 
 def view_like(input: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
     """
@@ -308,6 +332,7 @@ def view_like(input: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
     out_shape = list(ref.size())
     out_shape[-1] = -1
     return input.view(out_shape)
+
 
 def rgb2ycbcr(input: torch.Tensor) -> torch.Tensor:
     """
@@ -379,3 +404,29 @@ def ycbcr2rgb(input: torch.Tensor) -> torch.Tensor:
     g = y * 1.164 + cb * -0.392 + cr * -0.813
     b = y * 1.164 + cb * 2.017
     return torch.cat([r, g, b], dim_c)
+
+
+def horizontal_shift_image(input: torch.Tensor, shift: int, dim=-1) -> torch.Tensor:
+    if shift == 0:
+        return input
+    shifted = torch.zeros_like(input)
+    if dim == -1:
+        if shift > 0:
+            shifted[..., shift:] = input[..., :-shift]
+        else:
+            shifted[..., :shift] = input[..., -shift:]
+    elif dim == -2:
+        if shift > 0:
+            shifted[..., shift:, :] = input[..., :-shift, :]
+        else:
+            shifted[..., :shift, :] = input[..., -shift:, :]
+    else:
+        raise NotImplementedError
+    return shifted
+
+
+def depth_sample(depth_range: Tuple[float, float], n: int, lindisp: bool) -> torch.Tensor:
+    if lindisp:
+        depth_range = (1 / depth_range[0], 1 / depth_range[1])
+    samples = torch.linspace(depth_range[0], depth_range[1], n)
+    return samples

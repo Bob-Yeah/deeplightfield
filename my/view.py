@@ -12,10 +12,12 @@ class CameraParam(object):
         self.res = res
         self.f = torch.tensor([params['fx'], params['fy'], 1], device=device)
         self.c = torch.tensor([params['cx'], params['cy']], device=device)
+        self.device = device
 
     def to(self, device: torch.device):
         self.f = self.f.to(device)
         self.c = self.c.to(device)
+        self.device = device
         return self
 
     def resize(self, res: Tuple[int, int]):
@@ -25,26 +27,38 @@ class CameraParam(object):
         self.c[1] = self.c[1] / self.res[0] * res[0]
         self.res = res
         
-    def proj(self, p: torch.Tensor) -> torch.Tensor:
+    def proj(self, p: torch.Tensor, normalize=False, center_as_origin=False) -> torch.Tensor:
         """
         Project positions in local space to image plane
 
         :param p ```Tensor(..., 3)```: positions in local space
+        :param normalize: use normalized coord for image plane
+        :param center_as_origin: take center as the origin if image plane instead of top-left corner
         :return ```Tensor(..., 2)```: positions in image plane
         """
         p = p * self.f
-        p = p[..., 0:2] / p[..., 2:3] + self.c
+        p = p[..., 0:2] / p[..., 2:3]
+        if not center_as_origin:
+            p = p + self.c
+        if normalize:
+            p = p / torch.tensor([self.res[1], self.res[0]], device=self.device)
         return p
 
-    def unproj(self, p: torch.Tensor, z: torch.Tensor = None) -> torch.Tensor:
+    def unproj(self, p: torch.Tensor, z: torch.Tensor = None, normalize=False, center_as_origin=False) -> torch.Tensor:
         """
         Unproject positions in image plane to local space
 
         :param p ```Tensor(..., 2)```: positions in image plane
         :param z ```Tensor(..., 1)```: depths of positions, None means all depths set to 1
+        :param normalize: use normalized coord for image plane
+        :param center_as_origin: take center as the origin if image plane instead of top-left corner
         :return: positions in local space
         """
-        p = util.broadcast_cat((p - self.c) / self.f[0:2], 1.0)
+        if normalize:
+            p = p * torch.tensor([self.res[1], self.res[0]], device=self.device)
+        if not center_as_origin:
+            p = p - self.c
+        p = util.broadcast_cat(p / self.f[0:2], 1.0)
         if z != None:
             p = p * z
         return p

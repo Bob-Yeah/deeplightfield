@@ -1,6 +1,15 @@
 {
-    "python.pythonPath": "/home/dengnc/miniconda3/envs/pytorch/bin/python",
     "files.watcherExclude": {
         "**/data/**": true
-    }
+    },
+    "files.associations": {
+        "string": "cpp",
+        "__functional_03": "cpp",
+        "functional": "cpp",
+        "vector": "cpp",
+        "__config": "cpp",
+        "__nullptr": "cpp"
+    },
+    "python.pythonPath": "/home/dengnc/miniconda3/envs/pytorch/bin/python",
+    "jupyter.jupyterServerType": "local"
 }

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from ..my import net_modules
+from .modules import *
 from ..my import util
 
 
@@ -20,11 +20,11 @@ class SpherNet(nn.Module):
         """
         super().__init__()
         self.in_chns = 5 if translation else 2
-        self.input_encoder = net_modules.InputEncoder.Get(
+        self.input_encoder = InputEncoder.Get(
             encode_to_dim, self.in_chns)
         fc_params['in_chns'] = self.input_encoder.out_dim
         fc_params['out_chns'] = 1 if gray else 3
-        self.net = net_modules.FcNet(**fc_params)
+        self.net = FcNet(**fc_params)
 
     def forward(self, rays_o: torch.Tensor, rays_d: torch.Tensor) -> torch.Tensor:
         """

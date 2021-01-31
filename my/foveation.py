@@ -26,7 +26,8 @@ class Foveation(object):
         return self
 
     def synthesis(self, layers: List[torch.Tensor],
-                  fovea_center: Tuple[float, float]) -> torch.Tensor:
+                  fovea_center: Tuple[float, float],
+                  shifts: List[int] = None) -> torch.Tensor:
         """
         Generate foveated retinal image by blending fovea layers
         **Note: current implementation only support two fovea layers**
@@ -36,6 +37,8 @@ class Foveation(object):
         """
         output: torch.Tensor = nn_f.interpolate(layers[-1], self.out_res,
                                                 mode='bilinear', align_corners=False)
+        if shifts != None:
+            output = util.horizontal_shift_image(output, shifts[-1])
         c = torch.tensor([
             fovea_center[0] + self.out_res[1] / 2,
             fovea_center[1] + self.out_res[0] / 2
@@ -45,6 +48,8 @@ class Foveation(object):
                 continue
             R = self.get_layer_size_in_final_image(i) / 2
             grid = ((self.coords - c) / R)[None, ...]
+            if shifts != None:
+                grid = util.horizontal_shift_image(grid, shifts[i], -2)
             blend = nn_f.grid_sample(self.eye_fovea_blend[i][None, None, ...], grid) # (1, 1, H:out, W:out)
             output.mul_(1 - blend).add_(nn_f.grid_sample(layers[i], grid) * blend)
         return output

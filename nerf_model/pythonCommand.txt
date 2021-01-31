@@ -1,0 +1,4 @@
+python run_nerf.py --config config_gas.txt --render_demo
+
+
+## change config file as you want

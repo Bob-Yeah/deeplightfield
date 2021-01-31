@@ -7,7 +7,6 @@ from ..nets.msl_net_new import NewMslNet
 from ..nets.spher_net import SpherNet
 
 
-
 class SphericalViewSynConfig(object):
 
     def __init__(self):
@@ -57,7 +56,7 @@ class SphericalViewSynConfig(object):
             for val in self.FC_PARAMS['skips']
         ]) if len(self.FC_PARAMS['skips']) > 0 else ""
         depth_id = "_d%.2f-%.2f" % (self.SAMPLE_PARAMS['depth_range'][0],
-                                self.SAMPLE_PARAMS['depth_range'][1])
+                                    self.SAMPLE_PARAMS['depth_range'][1])
         samples_id = '_s%d' % self.SAMPLE_PARAMS['n_samples']
         opt_decay_id = '_decay%.1e' % self.OPT_DECAY if self.OPT_DECAY > 1e-5 else ''
         neg_flags = '%s%s%s' % (
@@ -131,33 +130,30 @@ class SphericalViewSynConfig(object):
         print('==========================')
 
     def create_net(self):
-        return net_builder[self.NET_TYPE](self)
-
-
-net_builder = {
-    'msl': lambda config: MslNet(
-        fc_params=config.FC_PARAMS,
-        sampler_params=(config.SAMPLE_PARAMS.update(
-            {'spherical': True}), config.SAMPLE_PARAMS)[1],
-        normalize_coord=config.NORMALIZE,
-        dir_as_input=config.DIR_AS_INPUT,
-        color=config.COLOR,
-        encode_to_dim=config.N_ENCODE_DIM),
-    'nmsl': lambda config: NewMslNet(
-        fc_params=config.FC_PARAMS,
-        sampler_params=(config.SAMPLE_PARAMS.update(
-            {'spherical': True}), config.SAMPLE_PARAMS)[1],
-        normalize_coord=config.NORMALIZE,
-        dir_as_input=config.DIR_AS_INPUT,
-        color=config.COLOR,
-        encode_to_dim=config.N_ENCODE_DIM),
-    'nnmsl': lambda config: NewMslNet(
-        fc_params=config.FC_PARAMS,
-        sampler_params=(config.SAMPLE_PARAMS.update(
-            {'spherical': True}), config.SAMPLE_PARAMS)[1],
-        normalize_coord=config.NORMALIZE,
-        dir_as_input=config.DIR_AS_INPUT,
-        not_same_net=True,
-        color=config.COLOR,
-        encode_to_dim=config.N_ENCODE_DIM)
-}
+        if self.NET_TYPE == 'msl':
+            return MslNet(fc_params=self.FC_PARAMS,
+                          sampler_params=self.SAMPLE_PARAMS,
+                          normalize_coord=self.NORMALIZE,
+                          dir_as_input=self.DIR_AS_INPUT,
+                          color=self.COLOR,
+                          encode_to_dim=self.N_ENCODE_DIM)
+        if self.NET_TYPE.startswith('nmsl'):
+            n_nets = int(self.NET_TYPE[4:]) if len(self.NET_TYPE) > 4 else 2
+            if self.SAMPLE_PARAMS['n_samples'] % n_nets != 0:
+                raise ValueError('n_samples should be divisible by n_nets')
+            return NewMslNet(fc_params=self.FC_PARAMS,
+                             sampler_params=self.SAMPLE_PARAMS,
+                             normalize_coord=self.NORMALIZE,
+                             n_nets=n_nets,
+                             dir_as_input=self.DIR_AS_INPUT,
+                             color=self.COLOR,
+                             encode_to_dim=self.N_ENCODE_DIM)
+        if self.NET_TYPE == 'nnmsl':
+            return NewMslNet(fc_params=self.FC_PARAMS,
+                             sampler_params=self.SAMPLE_PARAMS,
+                             normalize_coord=self.NORMALIZE,
+                             dir_as_input=self.DIR_AS_INPUT,
+                             not_same_net=True,
+                             color=self.COLOR,
+                             encode_to_dim=self.N_ENCODE_DIM)
+        raise ValueError('Invalid net type')

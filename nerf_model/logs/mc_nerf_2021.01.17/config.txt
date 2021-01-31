@@ -1,0 +1,17 @@
+expname = mc_nerf_2021.01.17
+basedir = ./logs
+datadir = ./data/mc_nerf_2021.01.17
+dataset_type = llff
+
+factor = 1
+llffhold = 8
+
+N_rand = 1024
+N_samples = 16
+N_importance = 0
+netdepth = 4
+netwidth = 128
+
+use_viewdirs = True
+raw_noise_std = 1e0
+

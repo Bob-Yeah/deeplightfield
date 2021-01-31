@@ -7,7 +7,7 @@ from tensorboardX import SummaryWriter
 from torch import nn
 
 sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deeplightfield"
+__package__ = "deep_view_syn"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=3,
