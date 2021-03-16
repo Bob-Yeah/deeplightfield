@@ -1,6 +1,6 @@
 import torch
 import math
-from ..my import device
+from my import device
 
 
 class FastDataLoader(object):

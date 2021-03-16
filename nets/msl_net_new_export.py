@@ -2,10 +2,10 @@ from typing import Tuple
 import math
 import torch
 import torch.nn as nn
-from ..my import net_modules
-from ..my import util
-from ..my import device
-from ..my import color_mode
+from my import net_modules
+from my import util
+from my import device
+from my import color_mode
 from .msl_net_new import NewMslNet
 
 

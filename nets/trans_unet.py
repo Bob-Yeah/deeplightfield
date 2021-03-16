@@ -1,9 +1,9 @@
 from typing import List
 import torch
 import torch.nn as nn
-from ..pytorch_prototyping.pytorch_prototyping import *
-from ..my import util
-from ..my import device
+from pytorch_prototyping.pytorch_prototyping import *
+from my import util
+from my import device
 
 
 class Encoder(nn.Module):

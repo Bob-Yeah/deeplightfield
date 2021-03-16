@@ -4,10 +4,10 @@ import torch
 import torchvision.transforms.functional as trans_f
 import torch.nn.functional as nn_f
 from typing import Tuple, Union
-from ..my import util
-from ..my import device
-from ..my import view
-from ..my import color_mode
+from my import util
+from my import device
+from my import view
+from my import color_mode
 
 
 class SphericalViewSynDataset(object):
@@ -128,6 +128,13 @@ class SphericalViewSynDataset(object):
             data_desc['view_rots'], device=device.GetDevice()).view(-1, 3, 3)  # (N, 3, 3)
         self.n_views = self.view_centers.size(0)
         self.n_pixels = self.n_views * self.view_res[0] * self.view_res[1]
+
+        if 'gl_coord' in data_desc and data_desc['gl_coord'] == True:
+            print('Convert from OGL coordinate to DX coordinate (i. e. right-hand to left-hand)')
+            self.cam_params.f[1] *= -1
+            self.view_centers[:, 2] *= -1
+            self.view_rots[:, 2] *= -1
+            self.view_rots[..., 2] *= -1
 
     def set_patch_size(self, patch_size: Union[int, Tuple[int, int]],
                        offset: Union[int, Tuple[int, int]] = 0):

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .modules import *
-from ..my import util
+from my import util
 
 
 class SpherNet(nn.Module):

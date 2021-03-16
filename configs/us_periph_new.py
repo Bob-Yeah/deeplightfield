@@ -1,4 +1,4 @@
-from ..my import color_mode
+from my import color_mode
 
 def update_config(config):
     # Dataset settings

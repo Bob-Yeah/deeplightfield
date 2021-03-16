@@ -1,10 +1,8 @@
 import os
 import importlib
-from os.path import join
-from ..my import color_mode
-from ..nets.msl_net import MslNet
-from ..nets.msl_net_new import NewMslNet
-from ..nets.spher_net import SpherNet
+from my import color_mode
+from nets.msl_net import MslNet
+from nets.msl_net_new import NewMslNet
 
 
 class SphericalViewSynConfig(object):
@@ -36,14 +34,13 @@ class SphericalViewSynConfig(object):
 
     def load(self, path):
         module_name = os.path.splitext(path)[0].replace('/', '.')
-        config_module = importlib.import_module(
-            'deep_view_syn.' + module_name)
+        config_module = importlib.import_module(module_name)
         config_module.update_config(self)
         self.name = module_name.split('.')[-1]
 
     def load_by_name(self, name):
         config_module = importlib.import_module(
-            'deep_view_syn.configs.' + name)
+            'configs.' + name)
         config_module.update_config(self)
         self.name = name
 

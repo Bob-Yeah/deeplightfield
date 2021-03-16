@@ -6,9 +6,6 @@ import torch.optim
 from tensorboardX import SummaryWriter
 from torch import nn
 
-sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-__package__ = "deep_view_syn"
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=3,
                     help='Which CUDA device to use.')
@@ -46,15 +43,15 @@ if opt.res:
 torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-from .my import netio
-from .my import util
-from .my import device
-from .my import loss
-from .my.progress_bar import progress_bar
-from .my.simple_perf import SimplePerf
-from .data.spherical_view_syn import *
-from .data.loader import FastDataLoader
-from .configs.spherical_view_syn import SphericalViewSynConfig
+from my import netio
+from my import util
+from my import device
+from my import loss
+from my.progress_bar import progress_bar
+from my.simple_perf import SimplePerf
+from data.spherical_view_syn import *
+from data.loader import FastDataLoader
+from configs.spherical_view_syn import SphericalViewSynConfig
 
 
 config = SphericalViewSynConfig()

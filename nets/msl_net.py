@@ -2,9 +2,8 @@ import math
 import torch
 import torch.nn as nn
 from .modules import *
-from ..my import util
-from ..my import color_mode
-
+from my import util
+from my import color_mode
 
 class MslNet(nn.Module):
 

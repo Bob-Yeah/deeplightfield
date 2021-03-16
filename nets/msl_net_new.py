@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 from .modules import *
-from ..my import color_mode
-from ..my.simple_perf import SimplePerf
+from my import color_mode
+from my.simple_perf import SimplePerf
 
 
 class NewMslNet(nn.Module):

@@ -1,8 +1,8 @@
 from typing import List, Tuple
 import torch
 import torch.nn as nn
-from ..my import device
-from ..my import util
+from my import device
+from my import util
 
 
 class FcLayer(nn.Module):
