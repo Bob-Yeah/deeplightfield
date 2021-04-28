@@ -6,8 +6,8 @@ import cv2
 from torchvision.io.video import write_video
 import matplotlib.pyplot as plt
 
-sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
-__package__ = "deep_view_syn.tools"
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
+
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0,
                     help='Which CUDA device to use.')
@@ -23,14 +23,16 @@ torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 torch.autograd.set_grad_enabled(False)
 
-from ..data.spherical_view_syn import *
-from ..configs.spherical_view_syn import SphericalViewSynConfig
-from ..my import netio
-from ..my import util
-from ..my import device
-from ..my import view
-from ..my.gen_final import GenFinal
-from ..my.progress_bar import progress_bar
+from data.spherical_view_syn import *
+from configs.spherical_view_syn import SphericalViewSynConfig
+from utils import netio
+from utils import misc
+from utils import img
+from utils import device
+from utils import view
+from utils import sphere
+from components.gen_final import GenFinal
+from utils.progress_bar import progress_bar
 
 
 def load_net(path):
@@ -38,8 +40,8 @@ def load_net(path):
     config.from_id(path[:-4])
     config.SAMPLE_PARAMS['perturb_sample'] = False
     # config.print()
-    net = config.create_net().to(device.GetDevice())
-    netio.LoadNet(path, net)
+    net = config.create_net().to(device.default())
+    netio.load(path, net)
     return net
 
 
@@ -59,7 +61,7 @@ rot_range = {
 trans_range = [-0.15, 0.15, -0.15, 0.15, -0.15, 0.15]
 def clamp_gaze(gaze):
     return gaze
-    scoord = util.CartesianToSpherical(gaze)
+    scoord = sphere.cartesian2spherical(gaze)
 
 
 def load_views(data_desc_file) -> Tuple[view.Trans, torch.Tensor]:
@@ -83,8 +85,8 @@ def load_views(data_desc_file) -> Tuple[view.Trans, torch.Tensor]:
                 float(str) for str in lines[i + 4].split(',')
             ]).view(4, 4)
             view_idx += 1
-        gazes = gazes.to(device.GetDevice())
-        views = views.to(device.GetDevice())
+        gazes = gazes.to(device.default())
+        views = views.to(device.default())
     return view.Trans(views[:, :3, 3], views[:, :3, :3]), gazes
 
 
@@ -113,7 +115,7 @@ print('Dataset loaded.')
 print('views:', n_views)
 
 gen = GenFinal(fov_list, res_list, res_full, fovea_net, periph_net,
-               device=device.GetDevice())
+               device=device.default())
 gaze_centers = gen.full_cam.proj(gazes, center_as_origin=True)
 
 videodir = sys.path[0] + '/../data/__3_video/'
@@ -121,7 +123,7 @@ inferoutdir = videodir + \
     '%s_%s/' % (opt.scene, os.path.splitext(opt.view_file)[0])
 hintoutdir = videodir + \
     '%s_%s_with_hint/' % (opt.scene, os.path.splitext(opt.view_file)[0])
-hint = util.ReadImageTensor(sys.path[0] + '/fovea_hint.png', rgb_only=False)
+hint = img.load(sys.path[0] + '/fovea_hint.png', rgb_only=False)
 
 
 def add_hint(img, center):
@@ -142,7 +144,7 @@ imgs = torch.empty(n_views, 3, res_full[0], res_full[1] * 2)
 
 if opt.add_hint and os.path.exists(inferoutdir + '/view0000.png'):
     for view_idx in range(n_views):
-        img = util.ReadImageTensor(inferoutdir + '/view%04d.png' % view_idx)
+        img = img.load(inferoutdir + '/view%04d.png' % view_idx)
         left_center = (gaze_centers[view_idx * 2][0].item(),
                        gaze_centers[view_idx * 2][1].item())
         right_center = (gaze_centers[view_idx * 2 + 1][0].item(),
@@ -176,7 +178,7 @@ if opt.output_video:
         opt.scene, os.path.splitext(opt.view_file)[0],
         'with_hint' if opt.add_hint else '')
     print('Write video file ' + os.path.abspath(video_file))
-    imgs = util.Tensor2MatImg(imgs)
+    imgs = img.torch2np(imgs)
     fourcc = cv2.VideoWriter_fourcc(*'X264')
     out = cv2.VideoWriter(video_file,fourcc, 50.0, (1440*2, 1600))
     for view_idx in range(n_views):
@@ -184,8 +186,7 @@ if opt.output_video:
     out.release()
 else:
     outdir = hintoutdir if opt.add_hint else inferoutdir
-    util.CreateDirIfNeed(outdir)
+    misc.create_dir(outdir)
     for view_idx in range(n_views):
-        util.WriteImageTensor(imgs[view_idx],
-                              outdir + 'view%04d.png' % view_idx)
+        img.save(imgs[view_idx], outdir + 'view%04d.png' % view_idx)
         progress_bar(view_idx, n_views, 'Frame %4d saved' % view_idx)

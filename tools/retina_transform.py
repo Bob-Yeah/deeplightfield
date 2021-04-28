@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 import os
-import argparse
+from utils.constants import *
 
 
 def genGaussiankernel(width, sigma):
@@ -87,7 +87,7 @@ def foveat_img(im, fixs):
     # B
     Bs = []
     for i in range(1, prNum):
-        Bs.append((0.5 - Ts[i]) / (Ts[i-1] - Ts[i] + 1e-5))
+        Bs.append((0.5 - Ts[i]) / (Ts[i-1] - Ts[i] + TINY_FLOAT))
 
     # M
     Ms = np.zeros((prNum, R.shape[0], R.shape[1]))

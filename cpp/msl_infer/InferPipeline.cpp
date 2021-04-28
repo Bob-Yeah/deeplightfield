@@ -6,7 +6,7 @@ InferPipeline::InferPipeline(
     uint samples) : _batchSize(batchSize),
                     _samples(samples),
                     _sampler(new Sampler({1.0f, 50.0f}, samples)),
-                    _encoder(new Encoder(10)),
+                    _encoder(new Encoder(10, 3)),
                     _renderer(new Renderer()),
                     _net(isNmsl ? new Nmsl2(batchSize, samples) : new Msl(batchSize, samples))
 {
@@ -31,8 +31,10 @@ void InferPipeline::run(sptr<CudaArray<glm::vec4>> o_colors,
     _sampler->sampleOnRays(_sphericalCoords, _depths, rays, rayOrigin);
 
     cudaEventRecord(eSampled);
-
-    _encoder->encode(_encoded, _sphericalCoords);
+    
+    sptr<CudaArray<float>> coords(new CudaArray<float>((float *)_sphericalCoords->getBuffer(),
+                                                       _sphericalCoords->n() * 3));
+    _encoder->encode(_encoded, coords);
 
     cudaEventRecord(eEncoded);
 
@@ -44,7 +46,8 @@ void InferPipeline::run(sptr<CudaArray<glm::vec4>> o_colors,
 
     cudaEventRecord(eRendered);
 
-    if (showPerf) {
+    if (showPerf)
+    {
         CHECK_EX(cudaDeviceSynchronize());
 
         float timeTotal, timeSample, timeEncode, timeInfer, timeRender;
@@ -60,7 +63,7 @@ void InferPipeline::run(sptr<CudaArray<glm::vec4>> o_colors,
              << timeInfer << "ms, Render: " << timeRender << "ms)";
         Logger::instance.info(sout.str());
     }
-	/*
+    /*
 	{
 		std::ostringstream sout;
 		sout << "Rays:" << std::endl;

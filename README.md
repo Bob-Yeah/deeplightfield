@@ -25,4 +25,5 @@ OUTPUT_DIR = "/home/yejiannan/Project/LightField/outputE/lf_syn_full"
 这里要重新配置一下数据的位置
 
 Video generate:
-ffmpeg -r 50 -i view%04d.png -c:v libx264 -vf fps=50 -pix_fmt yuv420p ../mc_hint.mp4
+ffmpeg -y -r 30 -i view_%04d.png -c:v libx264 -vf fps=30 -pix_fmt yuv420p ../train.mp4
+trtexec --onnx=net@256x256x2.onnx --fp16 --saveEngine=net@256x256x2.trt --workspace=4096

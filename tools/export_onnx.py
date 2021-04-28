@@ -5,8 +5,7 @@ import torch
 import torch.optim
 from torch import onnx
 
-sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
-__package__ = "deep_view_syn.tools"
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0,
@@ -23,10 +22,10 @@ opt = parser.parse_args()
 torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-from ..configs.spherical_view_syn import SphericalViewSynConfig
-from ..my import device
-from ..my import netio
-from ..my import util
+from configs.spherical_view_syn import SphericalViewSynConfig
+from utils import device
+from utils import netio
+from utils import misc
 
 dir_path, model_file = os.path.split(opt.model)
 batch_size = eval(opt.batch_size)
@@ -41,8 +40,8 @@ def load_net(path):
     config.SAMPLE_PARAMS['perturb_sample'] = False
     config.SAMPLE_PARAMS['n_samples'] = 4
     config.print()
-    net = config.create_net().to(device.GetDevice())
-    netio.LoadNet(path, net)
+    net = config.create_net().to(device.default())
+    netio.load(path, net)
     return net, name
 
 
@@ -52,10 +51,10 @@ if __name__ == "__main__":
         net, name = load_net(model_file)
 
         # Input to the model
-        rays_o = torch.empty(batch_size, 3, device=device.GetDevice())
-        rays_d = torch.empty(batch_size, 3, device=device.GetDevice())
+        rays_o = torch.empty(batch_size, 3, device=device.default())
+        rays_d = torch.empty(batch_size, 3, device=device.default())
 
-        util.CreateDirIfNeed(opt.outdir)
+        misc.create_dir(opt.outdir)
 
         # Export the model
         outpath = os.path.join(opt.outdir, config.to_id() + ".onnx")

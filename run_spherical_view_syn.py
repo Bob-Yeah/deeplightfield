@@ -1,60 +1,75 @@
-import sys
 import os
+import sys
 import argparse
+import shutil
+from typing import Mapping
+from utils.constants import TINY_FLOAT
 import torch
 import torch.optim
+import math
+import time
 from tensorboardX import SummaryWriter
 from torch import nn
+from numpy.core.numeric import NaN
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--device', type=int, default=3,
-                    help='Which CUDA device to use.')
-parser.add_argument('--config', type=str,
+# Arguments for train >>>
+parser.add_argument('-c', '--config', type=str,
                     help='Net config files')
-parser.add_argument('--config-id', type=str,
+parser.add_argument('-i', '--config-id', type=str,
                     help='Net config id')
-parser.add_argument('--dataset', type=str, required=True,
-                    help='Dataset description file')
-parser.add_argument('--cont', type=str,
-                    help='Continue train on model file')
-parser.add_argument('--epochs', type=int,
+parser.add_argument('-e', '--epochs', type=int, default=200,
                     help='Max epochs for train')
-parser.add_argument('--test', type=str,
-                    help='Test net file')
-parser.add_argument('--test-samples', type=int,
-                    help='Samples used for test')
-parser.add_argument('--res', type=str,
-                    help='Resolution')
-parser.add_argument('--output-gt', action='store_true',
-                    help='Output ground truth images if exist')
-parser.add_argument('--output-alongside', action='store_true',
-                    help='Output generated image alongside ground truth image')
-parser.add_argument('--output-video', action='store_true',
-                    help='Output test results as video')
-parser.add_argument('--perf', action='store_true',
-                    help='Test performance')
-parser.add_argument('--simple-log', action='store_true', help='Simple log')
+parser.add_argument('-n', '--prev-net', type=str)
+# Arguments for test >>>
+parser.add_argument('-r', '--output-res', type=str,
+                    help='Output resolution')
+parser.add_argument('-o', '--output', nargs='+', type=str, default=['perf', 'color'],
+                    help='Specify what to output (perf, color, depth, all)')
+parser.add_argument('--output-type', type=str, default='image',
+                    help='Specify the output type (image, video, debug)')
+# Other arguments >>>
+parser.add_argument('-t', '--test', action='store_true',
+                    help='Start in test mode')
+parser.add_argument('-m', '--model', type=str,
+                    help='The model file to load for continue train or test')
+parser.add_argument('-d', '--device', type=int, default=0,
+                    help='Which CUDA device to use.')
+parser.add_argument('-l', '--log-redirect', action='store_true',
+                    help='Is log redirected to file?')
+parser.add_argument('-p', '--prompt', action='store_true',
+                    help='Interactive prompt mode')
+parser.add_argument('dataset', type=str,
+                    help='Dataset description file')
+args = parser.parse_args()
 
-opt = parser.parse_args()
-if opt.res:
-    opt.res = tuple(int(s) for s in opt.res.split('x'))
 
-# Select device
-torch.cuda.set_device(opt.device)
+torch.cuda.set_device(args.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-from my import netio
-from my import util
-from my import device
-from my import loss
-from my.progress_bar import progress_bar
-from my.simple_perf import SimplePerf
+
+from utils import netio
+from utils import misc
+from utils import device
+from utils import img
+from utils import interact
+from utils.progress_bar import progress_bar
+from utils.perf import Perf
 from data.spherical_view_syn import *
 from data.loader import FastDataLoader
 from configs.spherical_view_syn import SphericalViewSynConfig
+from loss.ssim import ssim
 
 
+data_desc_path = args.dataset if args.dataset.endswith('.json') \
+    else os.path.join(args.dataset, 'train.json')
+data_desc_name = os.path.splitext(os.path.basename(data_desc_path))[0]
+data_dir = os.path.dirname(data_desc_path) + '/'
 config = SphericalViewSynConfig()
+BATCH_SIZE = 4096
+SAVE_INTERVAL = 10
+TEST_BATCH_SIZE = 1
+TEST_MAX_RAYS = 32768 // 2
 
 # Toggles
 ROT_ONLY = False
@@ -63,114 +78,204 @@ EVAL_TIME_PERFORMANCE = False
 #ROT_ONLY = True
 #EVAL_TIME_PERFORMANCE = True
 
-# Train
-BATCH_SIZE = 4096
-EPOCH_RANGE = range(0, opt.epochs if opt.epochs else 300)
-SAVE_INTERVAL = 10
 
-# Test
-TEST_BATCH_SIZE = 1
-TEST_MAX_RAYS = 32768
+def get_model_files(datadir):
+    model_files = []
+    for root, _, files in os.walk(datadir):
+        model_files += [
+            os.path.join(root, file).replace(datadir, '')
+            for file in files if file.endswith('.pth')
+        ]
+    return model_files
 
-# Paths
-data_desc_path = opt.dataset
-data_desc_name = os.path.splitext(os.path.basename(data_desc_path))[0]
-if opt.test:
-    test_net_path = opt.test
-    test_net_name = os.path.splitext(os.path.basename(test_net_path))[0]
-    run_dir = os.path.dirname(test_net_path) + '/'
-    run_id = os.path.basename(run_dir[:-1])
-    output_dir = run_dir + 'output/%s/%s%s/' % (test_net_name, data_desc_name,
-                                                '_%dx%d' % (opt.res[0], opt.res[1]) if opt.res else '')
-    config.from_id(run_id)
-    train_mode = False
-    if opt.test_samples:
-        config.SAMPLE_PARAMS['n_samples'] = opt.test_samples
-        output_dir = run_dir + 'output/%s/%s_s%d/' % \
-            (test_net_name, data_desc_name, opt.test_samples)
-else:
-    data_dir = os.path.dirname(data_desc_path) + '/'
-    if opt.cont:
-        train_net_name = os.path.splitext(os.path.basename(opt.cont))[0]
-        EPOCH_RANGE = range(int(train_net_name[12:]), EPOCH_RANGE.stop)
-        run_dir = os.path.dirname(opt.cont) + '/'
+
+def set_outputs(args, outputs_str: str):
+    args.output = [s.strip() for s in outputs_str.split(',')]
+
+
+if not args.test:
+    print('Start in train mode.')
+    if args.prompt:  # 2.1 Prompt max epochs
+        args.epochs = interact.input_ex('Max epochs:', interact.input_to_int(min=1),
+                                        default=200)
+    epochRange = range(1, args.epochs + 1)
+    if args.prompt:  # 2.2 Prompt continue train
+        model_files = get_model_files(data_dir)
+        args.model = interact.input_enum('Continue train on model:', model_files,
+                                         err_msg='No such model file', default='')
+    if args.model:
+        cont_model = os.path.join(data_dir, args.model)
+        model_name = os.path.splitext(os.path.basename(cont_model))[0]
+        epochRange = range(int(model_name[12:]) + 1, epochRange.stop)
+        run_dir = os.path.dirname(cont_model) + '/'
         run_id = os.path.basename(run_dir[:-1])
         config.from_id(run_id)
     else:
-        if opt.config:
-            config.load(opt.config)
-        if opt.config_id:
-            config.from_id(opt.config_id)
+        if args.prompt:  # 2.3 Prompt config file and additional config items
+            config_files = [
+                f[:-3] for f in os.listdir('configs')
+                if f.endswith('.py') and f != 'spherical_view_syn.py'
+            ]
+            args.config = interact.input_enum('Specify config file:', config_files,
+                                              err_msg='No such config file', default='')
+            args.config_id = interact.input_ex('Specify custom config items:',
+                                               default='')
+        if args.config:
+            config.load(os.path.join('configs', args.config + '.py'))
+        if args.config_id:
+            config.from_id(args.config_id)
         run_id = config.to_id()
         run_dir = data_dir + run_id + '/'
     log_dir = run_dir + 'log/'
-    output_dir = None
-    train_mode = True
+else:  # Test mode
+    print('Start in test mode.')
+    if args.prompt:  # 3. Prompt test model, output resolution, output mode
+        model_files = get_model_files(data_dir)
+        args.model = interact.input_enum('Specify test model:', model_files,
+                                         err_msg='No such model file')
+        args.output_res = interact.input_ex('Specify output resolution:',
+                                            default='')
+        set_outputs(args, interact.input_ex('Specify the outputs | [perf,color,depth,layers]/all:',
+                                            default='perf,color'))
+        args.output_type = interact.input_enum('Specify the output type | image/video:',
+                                               ['image', 'video'],
+                                               err_msg='Wrong output type',
+                                               default='image')
+    test_model_path = os.path.join(data_dir, args.model)
+    test_model_name = os.path.splitext(os.path.basename(test_model_path))[0]
+    run_dir = os.path.dirname(test_model_path) + '/'
+    run_id = os.path.basename(run_dir[:-1])
+    config.from_id(run_id)
+    config.SAMPLE_PARAMS['perturb_sample'] = False
+    args.output_res = tuple(int(s) for s in args.output_res.split('x')) \
+        if args.output_res else None
+    output_dir = f"{run_dir}output_{int(test_model_name.split('_')[-1])}"
+    output_dataset_id = '%s%s' % (
+        data_desc_name,
+        '_%dx%d' % (args.output_res[0], args.output_res[1]) if args.output_res else '')
+    args.output_flags = {
+        item: item in args.output or 'all' in args.output
+        for item in ['perf', 'color', 'depth', 'layers']
+    }
+
 
 config.print()
-print("dataset: ", data_desc_path)
-print("train_mode: ", train_mode)
-print("run_dir: ", run_dir)
-if not train_mode:
-    print("output_dir", output_dir)
-
-config.SAMPLE_PARAMS['perturb_sample'] = \
-    config.SAMPLE_PARAMS['perturb_sample'] and train_mode
-
-LOSSES = {
-    'mse': lambda: nn.MSELoss(),
-    'mse_grad': lambda: loss.CombinedLoss(
-        [nn.MSELoss(), loss.GradLoss()], [1.0, 0.5])
-}
+print("run dir: ", run_dir)
 
 # Initialize model
-model = config.create_net().to(device.GetDevice())
-loss_mse = nn.MSELoss().to(device.GetDevice())
-loss_grad = loss.GradLoss().to(device.GetDevice())
+model = config.create_net().to(device.default())
+loss_mse = nn.MSELoss().to(device.default())
 
 
-def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
+if args.prev_net:
+    prev_net_config_id = os.path.split(args.prev_net)[-2]
+    prev_net_config = SphericalViewSynConfig()
+    prev_net_config.from_id(prev_net_config_id)
+    prev_net = prev_net_config.create_net().to(device.default())
+    netio.load(args.prev_net, prev_net)
+    model.prev_net = prev_net
+
+
+toggle_show_dir = False
+last_toggle_time = 0
+
+from nets.cnerf_v3 import CNerf
+from nets.nerf_depth import NerfDepth
+is_dnerf = isinstance(model, NerfDepth)
+is_cnerf = isinstance(model, CNerf)
+
+
+def train_loop(data_loader, optimizer, perf, writer, epoch, iters):
+    global toggle_show_dir
+    global last_toggle_time
+    dataset: SphericalViewSynDataset = data_loader.dataset
     sub_iters = 0
     iters_in_epoch = len(data_loader)
     loss_min = 1e5
     loss_max = 0
     loss_avg = 0
-    perf1 = SimplePerf(opt.simple_log, True)
-    for _, gt, rays_o, rays_d in data_loader:
-        patch = (len(gt.size()) == 4)
-        gt = gt.to(device.GetDevice())
-        rays_o = rays_o.to(device.GetDevice())
-        rays_d = rays_d.to(device.GetDevice())
-        perf.Checkpoint("Load")
+    perf1 = Perf(args.log_redirect, True)
+    for idx, gt, rays_o, rays_d in data_loader:
+        if is_dnerf:
+            rays_depth = dataset.patched_depths[idx] if dataset.load_depths else None
+            rays_bins = dataset.patched_bins[idx] if dataset.load_bins else None
+            perf.checkpoint("Load")
 
-        out = model(rays_o, rays_d)
-        perf.Checkpoint("Forward")
+            out = model(rays_o, rays_d, rays_depth, rays_bins)
+            if isinstance(out, torch.Tensor):
+                out = {'color': out}
+            if isinstance(out, Mapping):
+                out = [out]
+            perf.checkpoint("Forward")
 
-        optimizer.zero_grad()
-        if config.COLOR == color_mode.YCbCr:
-            loss_mse_value = 0.3 * loss_mse(out[..., 0:2], gt[..., 0:2]) + \
-                0.7 * loss_mse(out[..., 2], gt[..., 2])
+            optimizer.zero_grad()
+            loss_value = loss_mse(out[0]['color'], gt)
+            for i in range(1, len(out)):
+                loss_value += loss_mse(out[i]['color'], gt)
+        elif is_cnerf:
+            rays_weights = model.bin_weights.flatten(0, 2)[idx]
+            perf.checkpoint("Load")
+
+            out = model(rays_o, rays_d, rays_weights)
+            if isinstance(out, torch.Tensor):
+                out = {'color': out}
+            if isinstance(out, Mapping):
+                out = [out]
+            perf.checkpoint("Forward")
+
+            optimizer.zero_grad()
+            loss_value = loss_mse(out[0]['color'], gt)
+            for i in range(1, len(out)):
+                loss_value += loss_mse(out[i]['color'], gt)
         else:
-            loss_mse_value = loss_mse(out, gt)
-        loss_grad_value = loss_grad(out, gt) if patch else None
-        loss_value = loss_mse_value  # + 0.5 * loss_grad_value if patch \
-        # else loss_mse_value
-        perf.Checkpoint("Compute loss")
+            gt_disp = torch.reciprocal(dataset.patched_depths[idx]) if config.DEPTH_REF else None
+            perf.checkpoint("Load")
+
+            out = model(rays_o, rays_d, ret_depth=config.DEPTH_REF)
+            if isinstance(out, torch.Tensor):
+                out = {'color': out}
+            if isinstance(out, Mapping):
+                out = [out]
+            perf.checkpoint("Forward")
+
+            optimizer.zero_grad()
+            loss_value = loss_mse(out[0]['color'], gt)
+            for i in range(1, len(out)):
+                loss_value += loss_mse(out[i]['color'], gt)
+            if config.DEPTH_REF:
+                disp_loss_value = loss_mse(torch.reciprocal(out[0]['depth'] + TINY_FLOAT), gt_disp)
+                for i in range(1, len(out)):
+                    disp_loss_value += loss_mse(torch.reciprocal(
+                        out[i]['depth'] + TINY_FLOAT), gt_disp)
+                disp_loss_value = disp_loss_value / math.pow(
+                    1 / dataset.depth_range[0] - 1 / dataset.depth_range[1], 2)
+            else:
+                disp_loss_value = 0
+            loss_value += disp_loss_value
+        perf.checkpoint("Compute loss")
 
         loss_value.backward()
-        perf.Checkpoint("Backward")
+        perf.checkpoint("Backward")
 
         optimizer.step()
-        perf.Checkpoint("Update")
+        perf.checkpoint("Update")
 
         loss_value = loss_value.item()
         loss_min = min(loss_min, loss_value)
         loss_max = max(loss_max, loss_value)
         loss_avg = (loss_avg * sub_iters + loss_value) / (sub_iters + 1)
-        if not opt.simple_log:
+        if not args.log_redirect:
             progress_bar(sub_iters, iters_in_epoch,
-                        "Loss: %.2e (%.2e/%.2e/%.2e)" % (loss_value, loss_min, loss_avg, loss_max),
-                        "Epoch {:<3d}".format(epoch))
+                         f"Loss: {loss_value:.2e} ({loss_min:.2e}/{loss_avg:.2e}/{loss_max:.2e})",
+                         f"Epoch {epoch:<3d}")
+            current_time = time.time()
+            if last_toggle_time == 0:
+                last_toggle_time = current_time
+            if current_time - last_toggle_time > 3:
+                toggle_show_dir = not toggle_show_dir
+                last_toggle_time = current_time
+            if toggle_show_dir:
+                sys.stdout.write(f'Epoch {epoch:<3d} [ {run_dir}    ]\r')
 
         # Write tensorboard logs.
         writer.add_scalar("loss mse", loss_value, iters)
@@ -181,200 +286,494 @@ def train_loop(data_loader, optimizer, loss, perf, writer, epoch, iters):
 
         iters += 1
         sub_iters += 1
-    if opt.simple_log:
-        perf1.Checkpoint('Epoch %d (%.2e/%.2e/%.2e)' % (epoch, loss_min, loss_avg, loss_max), True)
+    if args.log_redirect:
+        perf1.checkpoint('Epoch %d (%.2e/%.2e/%.2e)' %
+                         (epoch, loss_min, loss_avg, loss_max), True)
     return iters
+
+
+def save_checkpoint(epoch, iters):
+    for i in range(1, epoch):
+        if (i < epoch // 50 * 50 and i % 50 != 0 or i % 10 != 0) and \
+                os.path.exists(f'{run_dir}model-epoch_{i}.pth'):
+            os.remove(f'{run_dir}model-epoch_{i}.pth')
+    netio.save(f'{run_dir}model-epoch_{epoch}.pth', model, iters, print_log=False)
 
 
 def train():
     # 1. Initialize data loader
     print("Load dataset: " + data_desc_path)
-    train_dataset = SphericalViewSynDataset(
-        data_desc_path, color=config.COLOR, res=opt.res)
-    train_dataset.set_patch_size(1)
-    train_data_loader = FastDataLoader(
-        dataset=train_dataset,
-        batch_size=BATCH_SIZE,
-        shuffle=True,
-        drop_last=False,
-        pin_memory=True)
+    dataset = SphericalViewSynDataset(data_desc_path, c=config.COLOR, load_depths=config.DEPTH_REF,
+                                      load_bins=config.DEPTH_REF)
+    dataset.set_patch_size(1)
+    data_loader = FastDataLoader(dataset, BATCH_SIZE, shuffle=True, pin_memory=True)
+
+    if is_cnerf:
+        model.set_depth_maps(dataset.rays_o, dataset.rays_d, dataset.view_depths)
 
     # 2. Initialize components
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, weight_decay=config.OPT_DECAY)
-    loss = 0  # LOSSES[config.LOSS]().to(device.GetDevice())
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
 
-    if EPOCH_RANGE.start > 0:
-        iters = netio.LoadNet('%smodel-epoch_%d.pth' % (run_dir, EPOCH_RANGE.start),
-                              model, solver=optimizer)
+    if epochRange.start > 1:
+        iters = netio.load(f'{run_dir}model-epoch_{epochRange.start - 1}.pth', model)
     else:
+        misc.create_dir(run_dir)
+        misc.create_dir(log_dir)
         if config.NORMALIZE:
-            for _, _, rays_o, rays_d in train_data_loader:
+            for _, _, rays_o, rays_d in data_loader:
                 model.update_normalize_range(rays_o, rays_d)
             print('Depth/diopter range: ', model.depth_range)
-            print('Angle range: ', model.angle_range / 3.14159 * 180)
+            print('Angle range: ', model.angle_range.rad2deg())
         iters = 0
-    epoch = None
 
     # 3. Train
     model.train()
 
-    util.CreateDirIfNeed(run_dir)
-    util.CreateDirIfNeed(log_dir)
-
-    perf = SimplePerf(EVAL_TIME_PERFORMANCE, start=True)
+    perf = Perf(EVAL_TIME_PERFORMANCE, start=True)
     writer = SummaryWriter(log_dir)
 
     print("Begin training...")
-    for epoch in EPOCH_RANGE:
-        iters = train_loop(train_data_loader, optimizer, loss,
-                           perf, writer, epoch, iters)
-        # Save checkpoint
-        if ((epoch + 1) % SAVE_INTERVAL == 0):
-            netio.SaveNet('%smodel-epoch_%d.pth' % (run_dir, epoch + 1), model,
-                          solver=optimizer, iters=iters)
+    for epoch in epochRange:
+        iters = train_loop(data_loader, optimizer, perf, writer, epoch, iters)
+        save_checkpoint(epoch, iters)
     print("Train finished")
-    netio.SaveNet('%smodel-epoch_%d.pth' % (run_dir, epoch + 1), model,
-                  solver=optimizer, iters=iters)
-
-
-def perf():
-    with torch.no_grad():
-        # 1. Load dataset
-        print("Load dataset: " + data_desc_path)
-        test_dataset = SphericalViewSynDataset(data_desc_path,
-                                               load_images=True,
-                                               color=config.COLOR, res=opt.res)
-        test_data_loader = FastDataLoader(
-            dataset=test_dataset,
-            batch_size=1,
-            shuffle=False,
-            drop_last=False,
-            pin_memory=True)
-
-        # 2. Load trained model
-        netio.LoadNet(test_net_path, model)
-
-        # 3. Test on dataset
-        print("Begin perf, batch size is %d" % TEST_BATCH_SIZE)
-
-        perf = SimplePerf(True, start=True)
-        loss = nn.MSELoss()
-        i = 0
-        n = test_dataset.n_views
-        chns = 1 if config.COLOR == color_mode.GRAY else 3
-        out_view_images = torch.empty(n, chns, test_dataset.view_res[0],
-                                      test_dataset.view_res[1],
-                                      device=device.GetDevice())
-        perf_times = torch.empty(n)
-        perf_errors = torch.empty(n)
-        for view_idxs, gt, rays_o, rays_d in test_data_loader:
-            perf.Checkpoint("%d - Load" % i)
-            rays_o = rays_o.to(device.GetDevice()).view(-1, 3)
-            rays_d = rays_d.to(device.GetDevice()).view(-1, 3)
-            n_rays = rays_o.size(0)
-            chunk_size = min(n_rays, TEST_MAX_RAYS)
-            out_pixels = torch.empty(n_rays, chns, device=device.GetDevice())
-            for offset in range(0, n_rays, chunk_size):
-                idx = slice(offset, offset + chunk_size)
-                out_pixels[idx] = model(rays_o[idx], rays_d[idx])
-            if config.COLOR == color_mode.YCbCr:
-                out_pixels = util.ycbcr2rgb(out_pixels)
-            out_view_images[view_idxs] = out_pixels.view(
-                TEST_BATCH_SIZE, test_dataset.view_res[0],
-                test_dataset.view_res[1], -1).permute(0, 3, 1, 2)
-            perf_times[view_idxs] = perf.Checkpoint("%d - Infer" % i)
-            if config.COLOR == color_mode.YCbCr:
-                gt = util.ycbcr2rgb(gt)
-            error = loss(out_view_images[view_idxs], gt).item()
-            print("%d - Error: %f" % (i, error))
-            perf_errors[view_idxs] = error
-            i += 1
-
-        # 4. Save results
-        perf_mean_time = torch.mean(perf_times).item()
-        perf_mean_error = torch.mean(perf_errors).item()
-        with open(run_dir + 'perf_%s_%s_%.1fms_%.2e.txt' % (test_net_name, data_desc_name, perf_mean_time, perf_mean_error), 'w') as fp:
-            fp.write('View, Time, Error\n')
-            fp.writelines(['%d, %f, %f\n' % (
-                i, perf_times[i].item(), perf_errors[i].item()) for i in range(n)])
 
 
 def test():
     with torch.no_grad():
         # 1. Load dataset
         print("Load dataset: " + data_desc_path)
-        test_dataset = SphericalViewSynDataset(data_desc_path,
-                                               load_images=opt.output_gt or opt.output_alongside,
-                                               color=config.COLOR,
-                                               res=opt.res)
-        test_data_loader = FastDataLoader(
-            dataset=test_dataset,
-            batch_size=1,
-            shuffle=False,
-            drop_last=False,
-            pin_memory=True)
+        dataset = SphericalViewSynDataset(data_desc_path, res=args.output_res,
+                                          load_images=args.output_flags['perf'])
+        data_loader = FastDataLoader(dataset, 1, shuffle=False, pin_memory=True)
 
         # 2. Load trained model
-        netio.LoadNet(test_net_path, model)
+        netio.load(test_model_path, model)
+        model.eval()
 
         # 3. Test on dataset
         print("Begin test, batch size is %d" % TEST_BATCH_SIZE)
-        util.CreateDirIfNeed(output_dir)
 
-        perf = SimplePerf(True, start=True)
         i = 0
-        n = test_dataset.n_views
-        chns = 1 if config.COLOR == color_mode.GRAY else 3
-        out_view_images = torch.empty(n, chns, test_dataset.view_res[0],
-                                      test_dataset.view_res[1],
-                                      device=device.GetDevice())
-        for view_idxs, _, rays_o, rays_d in test_data_loader:
-            perf.Checkpoint("%d - Load" % i)
-            rays_o = rays_o.to(device.GetDevice()).view(-1, 3)
-            rays_d = rays_d.to(device.GetDevice()).view(-1, 3)
+        global_offset = 0
+        chns = color.chns(config.COLOR)
+        n = dataset.n_views
+        total_pixels = n * dataset.view_res[0] * dataset.view_res[1]
+
+        out = {}
+        if args.output_flags['perf']:
+            perf_times = torch.empty(n)
+            perf = Perf(True, start=True)
+        if args.output_flags['layers']:
+            out['layers'] = torch.empty(total_pixels, config.SAMPLE_PARAMS['n_samples'], chns + 1,
+                                        device=device.default())
+        if args.output_flags['perf'] or args.output_flags['color']:
+            out['color'] = torch.empty(total_pixels, chns, device=device.default())
+        if args.output_flags['depth']:
+            out['depth'] = torch.empty(total_pixels, device=device.default())
+            out['bins'] = torch.zeros(total_pixels, 3, device=device.default())
+
+        for _, _, rays_o, rays_d in data_loader:
+            rays_o = rays_o.view(-1, 3)
+            rays_d = rays_d.view(-1, 3)
             n_rays = rays_o.size(0)
-            chunk_size = min(n_rays, TEST_MAX_RAYS)
-            out_pixels = torch.empty(n_rays, chns, device=device.GetDevice())
-            for offset in range(0, n_rays, chunk_size):
-                idx = slice(offset, offset + chunk_size)
-                out_pixels[idx] = model(rays_o[idx], rays_d[idx])
-            if config.COLOR == color_mode.YCbCr:
-                out_pixels = util.ycbcr2rgb(out_pixels)
-            out_view_images[view_idxs] = out_pixels.view(
-                TEST_BATCH_SIZE, test_dataset.view_res[0],
-                test_dataset.view_res[1], -1).permute(0, 3, 1, 2)
-            perf.Checkpoint("%d - Infer" % i)
+            for offset in range(0, n_rays, TEST_MAX_RAYS):
+                idx = slice(offset, min(offset + TEST_MAX_RAYS, n_rays))
+                global_idx = slice(idx.start + global_offset, idx.stop + global_offset)
+                ret = model(rays_o[idx], rays_d[idx],
+                            ret_depth=args.output_flags['depth'],
+                            debug=args.output_flags['layers'])
+                if isinstance(ret, torch.Tensor):
+                    ret = {'color': ret}
+                if isinstance(ret, list):
+                    ret = ret[-1]
+                if 'bins' in out:
+                    ret['weight'] = ret['weight'].view(-1, ret['weight'].size(-1) // 2, 2).sum(-1)
+                    is_local_max = torch.ones_like(ret['weight'], dtype=torch.bool)
+                    for delta in range(-3, 0):
+                        is_local_max[..., -delta:].logical_and_(
+                            ret['weight'][..., -delta:] > ret['weight'][..., :delta])
+                    for delta in range(1, 4):
+                        is_local_max[..., :-delta].logical_and_(
+                            ret['weight'][..., :-delta] > ret['weight'][..., delta:])
+                    ret['weight'][is_local_max.logical_not()] = 0
+                    vals, idxs = torch.topk(ret['weight'], 3)  # (B, 3)
+                    vals = vals / vals.sum(-1, keepdim=True)
+                    ret['bins'] = (idxs.to(torch.float) / (ret['weight'].size(-1) - 1)
+                                   * 0.5 + 0.5) * (vals > 0.1)
+
+                for key in out:
+                    out[key][global_idx] = ret[key]
+            if args.output_flags['perf']:
+                perf_times[i] = perf.checkpoint()
+            progress_bar(i, n, 'Inferring...')
             i += 1
+            global_offset += n_rays
 
         # 4. Save results
-        if opt.output_video:
-            util.generate_video(out_view_images, output_dir +
-                                'out.mp4', 24, 3, True)
-        else:
-            gt_paths = [
-                '%sgt_view_%04d.png' % (output_dir, i) for i in range(n)
-            ]
-            out_paths = [
-                '%sout_view_%04d.png' % (output_dir, i) for i in range(n)
-            ]
-            if test_dataset.load_images:
-                if opt.output_alongside:
-                    util.WriteImageTensor(
-                        torch.cat([
-                            test_dataset.view_images,
-                            out_view_images
-                        ], 3), out_paths)
-                else:
-                    util.WriteImageTensor(out_view_images, out_paths)
-                    util.WriteImageTensor(test_dataset.view_images, gt_paths)
+        print('Saving results...')
+        misc.create_dir(output_dir)
+
+        for key in out:
+            shape = [n] + list(dataset.view_res) + list(out[key].size()[1:])
+            out[key] = out[key].view(shape)
+        if 'color' in out:
+            out['color'] = out['color'].permute(0, 3, 1, 2)
+        if 'layers' in out:
+            # n, y, x, samples, chns -> samples, n, chns, y, x
+            out['layers'] = out['layers'].permute(3, 0, 4, 1, 2)
+        if 'bins' in out:
+            out['bins'] = out['bins'].permute(0, 3, 1, 2)
+
+        if args.output_flags['perf']:
+            perf_errors = torch.ones(n) * NaN
+            perf_ssims = torch.ones(n) * NaN
+            if dataset.view_images != None:
+                for i in range(n):
+                    perf_errors[i] = loss_mse(dataset.view_images[i], out['color'][i]).item()
+                    perf_ssims[i] = ssim(dataset.view_images[i:i + 1],
+                                         out['color'][i:i + 1]).item() * 100
+            perf_mean_time = torch.mean(perf_times).item()
+            perf_mean_error = torch.mean(perf_errors).item()
+            perf_name = 'perf_%s_%.1fms_%.2e.csv' % (
+                output_dataset_id, perf_mean_time, perf_mean_error)
+
+            # Remove old performance reports
+            for file in os.listdir(output_dir):
+                if file.startswith(f'perf_{output_dataset_id}'):
+                    os.remove(f"{output_dir}/{file}")
+
+            # Save new performance reports
+            with open(f"{output_dir}/{perf_name}", 'w') as fp:
+                fp.write('View, Time, PSNR, SSIM\n')
+                fp.writelines([
+                    f'{dataset.view_idxs[i]}, {perf_times[i].item():.2f}, '
+                    f'{img.mse2psnr(perf_errors[i].item()):.2f}, {perf_ssims[i].item():.2f}\n'
+                    for i in range(n)
+                ])
+
+        if args.output_flags['color']:
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_color.mp4"
+                img.save_video(out['color'], output_file, 30)
             else:
-                util.WriteImageTensor(out_view_images, out_paths)
+                output_subdir = f"{output_dir}/{output_dataset_id}_color"
+                misc.create_dir(output_subdir)
+                img.save(out['color'], [f'{output_subdir}/{i:0>4d}.png' for i in dataset.view_idxs])
+
+        if args.output_flags['depth']:
+            colorized_depths = img.colorize_depthmap(
+                out['depth'], config.SAMPLE_PARAMS['depth_range'])
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_depth.mp4"
+                img.save_video(colorized_depths, output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_depth"
+                misc.create_dir(output_subdir)
+                img.save(colorized_depths, [
+                    f'{output_subdir}/{i:0>4d}.png'
+                    for i in dataset.view_idxs
+                ])
+                output_subdir = f"{output_dir}/{output_dataset_id}_bins"
+                misc.create_dir(output_subdir)
+                img.save(out['bins'], [f'{output_subdir}/{i:0>4d}.png' for i in dataset.view_idxs])
+
+        if args.output_flags['layers']:
+            if args.output_type == 'video':
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    output_file = f"{output_dir}/{output_dataset_id}_layers[{j:0>3d}].mp4"
+                    img.save_video(out['layers'][j], output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_layers"
+                misc.create_dir(output_subdir)
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    img.save(out['layers'][j], [
+                        f'{output_subdir}/{i:0>4d}[{j:0>3d}].png'
+                        for i in dataset.view_idxs
+                    ])
+
+
+def test1():
+    with torch.no_grad():
+        # 1. Load dataset
+        print("Load dataset: " + data_desc_path)
+        dataset = SphericalViewSynDataset(data_desc_path, res=args.output_res,
+                                          load_images=args.output_flags['perf'],
+                                          load_depths=True, load_bins=True)
+        data_loader = FastDataLoader(dataset, 1, shuffle=False, pin_memory=True)
+
+        # 2. Load trained model
+        netio.load(test_model_path, model)
+        model.eval()
+
+        # 3. Test on dataset
+        print("Begin test, batch size is %d" % TEST_BATCH_SIZE)
+
+        i = 0
+        global_offset = 0
+        chns = color.chns(config.COLOR)
+        n = dataset.n_views
+        total_pixels = n * dataset.view_res[0] * dataset.view_res[1]
+
+        out = {}
+        if args.output_flags['perf']:
+            perf_times = torch.empty(n)
+            perf = Perf(True, start=True)
+        if args.output_flags['layers']:
+            out['layers'] = torch.empty(total_pixels, config.SAMPLE_PARAMS['n_samples'], chns + 1,
+                                        device=device.default())
+        if args.output_flags['perf'] or args.output_flags['color']:
+            out['color'] = torch.empty(total_pixels, chns, device=device.default())
+        if args.output_flags['depth']:
+            out['depth'] = torch.empty(total_pixels, device=device.default())
+
+        for vi, _, rays_o, rays_d in data_loader:
+            rays_o = rays_o.view(-1, 3)
+            rays_d = rays_d.view(-1, 3)
+            rays_depth = dataset.patched_depths[vi].flatten() if dataset.load_depths else None
+            rays_bins = dataset.patched_bins[vi].flatten(0, 2) if dataset.load_bins else None
+            n_rays = rays_o.size(0)
+            for offset in range(0, n_rays, TEST_MAX_RAYS):
+                idx = slice(offset, min(offset + TEST_MAX_RAYS, n_rays))
+                global_idx = slice(idx.start + global_offset, idx.stop + global_offset)
+                ret = model(rays_o[idx], rays_d[idx],
+                            rays_depth[idx] if rays_depth is not None else None,
+                            rays_bins[idx] if rays_bins is not None else None,
+                            ret_depth=args.output_flags['depth'],
+                            debug=args.output_flags['layers'])
+                if isinstance(ret, torch.Tensor):
+                    ret = {'color': ret}
+                if isinstance(ret, list):
+                    ret = ret[-1]
+                for key in out:
+                    out[key][global_idx] = ret[key]
+            if args.output_flags['perf']:
+                perf_times[i] = perf.checkpoint()
+            progress_bar(i, n, 'Inferring...')
+            i += 1
+            global_offset += n_rays
+
+        # 4. Save results
+        print('Saving results...')
+        misc.create_dir(output_dir)
+
+        for key in out:
+            shape = [n] + list(dataset.view_res) + list(out[key].size()[1:])
+            out[key] = out[key].view(shape)
+        if 'color' in out:
+            out['color'] = out['color'].permute(0, 3, 1, 2)
+        if 'layers' in out:
+            # n, y, x, samples, chns -> samples, n, chns, y, x
+            out['layers'] = out['layers'].permute(3, 0, 4, 1, 2)
+
+        if args.output_flags['perf']:
+            perf_errors = torch.ones(n) * NaN
+            perf_ssims = torch.ones(n) * NaN
+            if dataset.view_images != None:
+                for i in range(n):
+                    perf_errors[i] = loss_mse(dataset.view_images[i], out['color'][i]).item()
+                    perf_ssims[i] = ssim(dataset.view_images[i:i + 1],
+                                         out['color'][i:i + 1]).item() * 100
+            perf_mean_time = torch.mean(perf_times).item()
+            perf_mean_error = torch.mean(perf_errors).item()
+            perf_name = 'perf_%s_%.1fms_%.2e.csv' % (
+                output_dataset_id, perf_mean_time, perf_mean_error)
+
+            # Remove old performance reports
+            for file in os.listdir(output_dir):
+                if file.startswith(f'perf_{output_dataset_id}'):
+                    os.remove(f"{output_dir}/{file}")
+
+            # Save new performance reports
+            with open(f"{output_dir}/{perf_name}", 'w') as fp:
+                fp.write('View, Time, PSNR, SSIM\n')
+                fp.writelines([
+                    f'{dataset.view_idxs[i]}, {perf_times[i].item():.2f}, '
+                    f'{img.mse2psnr(perf_errors[i].item()):.2f}, {perf_ssims[i].item():.2f}\n'
+                    for i in range(n)
+                ])
+
+        if args.output_flags['color']:
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_color.mp4"
+                img.save_video(out['color'], output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_color"
+                misc.create_dir(output_subdir)
+                img.save(out['color'], [f'{output_subdir}/{i:0>4d}.png' for i in dataset.view_idxs])
+
+        if args.output_flags['depth']:
+            colorized_depths = img.colorize_depthmap(
+                out['depth'], config.SAMPLE_PARAMS['depth_range'])
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_depth.mp4"
+                img.save_video(colorized_depths, output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_depth"
+                misc.create_dir(output_subdir)
+                img.save(colorized_depths, [
+                    f'{output_subdir}/{i:0>4d}.png'
+                    for i in dataset.view_idxs
+                ])
+
+        if args.output_flags['layers']:
+            if args.output_type == 'video':
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    output_file = f"{output_dir}/{output_dataset_id}_layers[{j:0>3d}].mp4"
+                    img.save_video(out['layers'][j], output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_layers"
+                misc.create_dir(output_subdir)
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    img.save(out['layers'][j], [
+                        f'{output_subdir}/{i:0>4d}[{j:0>3d}].png'
+                        for i in dataset.view_idxs
+                    ])
+
+
+def test2():
+    with torch.no_grad():
+        # 1. Load dataset
+        print("Load dataset: " + data_desc_path)
+        dataset = SphericalViewSynDataset(data_desc_path, res=args.output_res,
+                                          load_images=args.output_flags['perf'],
+                                          load_depths=True)
+        data_loader = FastDataLoader(dataset, 1, shuffle=False, pin_memory=True)
+
+        # 2. Load trained model
+        netio.load(test_model_path, model)
+        model.set_depth_maps(dataset.rays_o, dataset.rays_d, dataset.view_depths)
+        model.eval()
+
+        # 3. Test on dataset
+        print("Begin test, batch size is %d" % TEST_BATCH_SIZE)
+
+        i = 0
+        global_offset = 0
+        chns = color.chns(config.COLOR)
+        n = dataset.n_views
+        total_pixels = n * dataset.view_res[0] * dataset.view_res[1]
+
+        out = {}
+        if args.output_flags['perf']:
+            perf_times = torch.empty(n)
+            perf = Perf(True, start=True)
+        if args.output_flags['layers']:
+            out['layers'] = torch.empty(total_pixels, config.SAMPLE_PARAMS['n_samples'], chns + 1,
+                                        device=device.default())
+        if args.output_flags['perf'] or args.output_flags['color']:
+            out['color'] = torch.empty(total_pixels, chns, device=device.default())
+        if args.output_flags['depth']:
+            out['depth'] = torch.empty(total_pixels, device=device.default())
+
+        for vi, _, rays_o, rays_d in data_loader:
+            rays_o = rays_o.view(-1, 3)
+            rays_d = rays_d.view(-1, 3)
+            rays_weights = model.bin_weights[vi].flatten(0, 2)
+            n_rays = rays_o.size(0)
+            for offset in range(0, n_rays, TEST_MAX_RAYS):
+                idx = slice(offset, min(offset + TEST_MAX_RAYS, n_rays))
+                global_idx = slice(idx.start + global_offset, idx.stop + global_offset)
+                ret = model(rays_o[idx], rays_d[idx], rays_weights[idx],
+                            ret_depth=args.output_flags['depth'],
+                            debug=args.output_flags['layers'])
+                if isinstance(ret, torch.Tensor):
+                    ret = {'color': ret}
+                if isinstance(ret, list):
+                    ret = ret[-1]
+                for key in out:
+                    out[key][global_idx] = ret[key]
+            if args.output_flags['perf']:
+                perf_times[i] = perf.checkpoint()
+            progress_bar(i, n, 'Inferring...')
+            i += 1
+            global_offset += n_rays
+
+        # 4. Save results
+        print('Saving results...')
+        misc.create_dir(output_dir)
+
+        for key in out:
+            shape = [n] + list(dataset.view_res) + list(out[key].size()[1:])
+            out[key] = out[key].view(shape)
+        if 'color' in out:
+            out['color'] = out['color'].permute(0, 3, 1, 2)
+        if 'layers' in out:
+            # n, y, x, samples, chns -> samples, n, chns, y, x
+            out['layers'] = out['layers'].permute(3, 0, 4, 1, 2)
+
+        if args.output_flags['perf']:
+            perf_errors = torch.ones(n) * NaN
+            perf_ssims = torch.ones(n) * NaN
+            if dataset.view_images != None:
+                for i in range(n):
+                    perf_errors[i] = loss_mse(dataset.view_images[i], out['color'][i]).item()
+                    perf_ssims[i] = ssim(dataset.view_images[i:i + 1],
+                                         out['color'][i:i + 1]).item() * 100
+            perf_mean_time = torch.mean(perf_times).item()
+            perf_mean_error = torch.mean(perf_errors).item()
+            perf_name = 'perf_%s_%.1fms_%.2e.csv' % (
+                output_dataset_id, perf_mean_time, perf_mean_error)
+
+            # Remove old performance reports
+            for file in os.listdir(output_dir):
+                if file.startswith(f'perf_{output_dataset_id}'):
+                    os.remove(f"{output_dir}/{file}")
+
+            # Save new performance reports
+            with open(f"{output_dir}/{perf_name}", 'w') as fp:
+                fp.write('View, Time, PSNR, SSIM\n')
+                fp.writelines([
+                    f'{dataset.view_idxs[i]}, {perf_times[i].item():.2f}, '
+                    f'{img.mse2psnr(perf_errors[i].item()):.2f}, {perf_ssims[i].item():.2f}\n'
+                    for i in range(n)
+                ])
+
+        if args.output_flags['color']:
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_color.mp4"
+                img.save_video(out['color'], output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_color"
+                misc.create_dir(output_subdir)
+                img.save(out['color'], [f'{output_subdir}/{i:0>4d}.png' for i in dataset.view_idxs])
+
+        if args.output_flags['depth']:
+            colorized_depths = img.colorize_depthmap(
+                out['depth'], config.SAMPLE_PARAMS['depth_range'])
+            if args.output_type == 'video':
+                output_file = f"{output_dir}/{output_dataset_id}_depth.mp4"
+                img.save_video(colorized_depths, output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_depth"
+                misc.create_dir(output_subdir)
+                img.save(colorized_depths, [
+                    f'{output_subdir}/{i:0>4d}.png'
+                    for i in dataset.view_idxs
+                ])
+
+        if args.output_flags['layers']:
+            if args.output_type == 'video':
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    output_file = f"{output_dir}/{output_dataset_id}_layers[{j:0>3d}].mp4"
+                    img.save_video(out['layers'][j], output_file, 30)
+            else:
+                output_subdir = f"{output_dir}/{output_dataset_id}_layers"
+                misc.create_dir(output_subdir)
+                for j in range(config.SAMPLE_PARAMS['n_samples']):
+                    img.save(out['layers'][j], [
+                        f'{output_subdir}/{i:0>4d}[{j:0>3d}].png'
+                        for i in dataset.view_idxs
+                    ])
 
 
 if __name__ == "__main__":
-    if train_mode:
-        train()
-    elif opt.perf:
-        perf()
+    if args.test:
+        if is_dnerf:
+            test1()
+        elif is_cnerf:
+            test2()
+        else:
+            test()
     else:
-        test()
+        train()

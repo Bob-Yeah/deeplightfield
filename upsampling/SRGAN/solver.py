@@ -9,7 +9,7 @@ import torch.backends.cudnn as cudnn
 import torchvision
 from torchvision.models.vgg import vgg16
 from .model import Generator, Discriminator
-from ..my.progress_bar import progress_bar
+from utils.progress_bar import progress_bar
 
 
 class SRGANTrainer(object):

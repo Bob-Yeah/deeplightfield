@@ -3,13 +3,14 @@
 
 class Encoder {
 public:
-    Encoder(uint multires) : _multires(multires) { _genFreqArray(); }
+    Encoder(uint multires, uint chns) : _multires(multires), _chns(chns) { _genFreqArray(); }
 
-    uint outDim() const { return _multires * 6 + 3; }
-    void encode(sptr<CudaArray<float>> o_encoded, sptr<CudaArray<glm::vec3>> input);
+    uint outDim() const { return _chns * (1 + _multires * 2); }
+    void encode(sptr<CudaArray<float>> output, sptr<CudaArray<float>> input);
 
 private:
     uint _multires;
+    uint _chns;
     sptr<CudaArray<float>> _freqs;
 
     void _genFreqArray();

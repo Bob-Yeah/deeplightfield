@@ -6,8 +6,7 @@ import torch.optim
 from torch import onnx
 from typing import Mapping, List
 
-sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
-__package__ = "deep_view_syn.tools"
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--device', type=int, default=0,
@@ -24,11 +23,11 @@ opt = parser.parse_args()
 torch.cuda.set_device(opt.device)
 print("Set CUDA:%d as current device." % torch.cuda.current_device())
 
-from ..nets.msl_net_new_export import *
-from ..my import util
-from ..my import netio
-from ..my import device
-from ..configs.spherical_view_syn import SphericalViewSynConfig
+from nets.msl_net_new_export import *
+from utils import misc
+from utils import netio
+from utils import device
+from configs.spherical_view_syn import SphericalViewSynConfig
 
 dir_path, model_file = os.path.split(opt.model)
 batch_size = eval(opt.batch_size)
@@ -44,8 +43,8 @@ def load_net(path):
     batch_size_str: str = opt.batch_size.replace('*', 'x')
     config.name += batch_size_str
     config.print()
-    net = config.create_net().to(device.GetDevice())
-    netio.LoadNet(path, net)
+    net = config.create_net().to(device.default())
+    netio.load(path, net)
     return net, id
 
 
@@ -53,7 +52,7 @@ def export_net(net: torch.nn.Module, name: str,
                input: Mapping[str, List[int]], output_names: List[str]):
     outpath = os.path.join(opt.outdir, config.to_id(), name + ".onnx")
     input_tensors = tuple([
-        torch.empty(size, device=device.GetDevice())
+        torch.empty(size, device=device.default())
         for size in input.values()
     ])
     onnx.export(
@@ -75,7 +74,7 @@ if __name__ == "__main__":
         # Load model`
         net, name = load_net(model_file)
 
-        util.CreateDirIfNeed(os.path.join(opt.outdir, config.to_id()))
+        misc.create_dir(os.path.join(opt.outdir, config.to_id()))
 
         # Export Sampler
         export_net(Sampler(net), 'sampler', {

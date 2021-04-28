@@ -1,15 +1,14 @@
 import sys
 import os
-sys.path.append(os.path.abspath(sys.path[0] + '/../../'))
-__package__ = "deep_view_syn.tools"
+sys.path.append(os.path.abspath(sys.path[0] + '/../'))
 
 import argparse
 from PIL import Image
-from ..my import util
+from utils import misc
 
 
 def batch_scale(src, target, size):
-    util.CreateDirIfNeed(target)
+    misc.create_dir(target)
     for file_name in os.listdir(src):
         postfix = os.path.splitext(file_name)[1]
         if postfix == '.jpg' or postfix == '.png':

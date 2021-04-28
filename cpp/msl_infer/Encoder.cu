@@ -1,38 +1,36 @@
 #include "Encoder.h"
 #include "thread_index.h"
 
-/// idx3.y = 0: x, y, z, sin(x), sin(y), sin(z), cos(x), cos(y), cos(z)
-/// idx3.y = 1: sin(2x), sin(2y), sin(2z), cos(2x), cos(2y), cos(2z)
+/// idx3.z = 0: x, y, z, sin(x), sin(y), sin(z), cos(x), cos(y), cos(z)
+/// idx3.z = 1: sin(2x), sin(2y), sin(2z), cos(2x), cos(2y), cos(2z)
 /// ...
-/// idx3.y = n_freq-1: sin(2^(n_freq-1)x), sin(2^(n_freq-1)y), sin(2^(n_freq-1)z),
+/// idx3.z = n_freq-1: sin(2^(n_freq-1)x), sin(2^(n_freq-1)y), sin(2^(n_freq-1)z),
 ///                    cos(2^(n_freq-1)x), cos(2^(n_freq-1)y), cos(2^(n_freq-1)z)
-/// Dispatch (n_freq, n_batch, 1)
-__global__ void cu_encode(glm::vec3 *o_encoded, glm::vec3 *input, float *freqs, uint n)
+/// Dispatch (n_batch, n_chns, n_freqs)
+__global__ void cu_encode(float *output, float *input, float *freqs, uint n)
 {
     glm::uvec3 idx3 = IDX3;
-    if (idx3.y >= n)
+    if (idx3.x >= n)
         return;
-    uint encode_dim = blockDim.x * 2 + 1;
-    uint offset = idx3.y * encode_dim;
+    uint n = blockDim.x, inChns = blockDim.y, nFreqs = blockDim.z;
+    uint i = idx3.x, chn = idx3.y, freq = idx3.z;
+    uint elem = i * inChns + chn;
+    uint outChns = inChns * (nFreqs * 2 + 1);
+    uint base = i * outChns + chn;
     if (idx3.x == 0)
-        o_encoded[offset] = input[idx3.y];
-    glm::vec3 x = freqs[idx3.x] * input[idx3.y];
-    glm::vec3 s, c;
-    /*__sincosf(x.x, &s.x, &c.x);
-    __sincosf(x.y, &s.y, &c.y);
-    __sincosf(x.z, &s.z, &c.z);
-    o_encoded[offset + idx3.x * 2 + 1] = s;
-    o_encoded[offset + idx3.x * 2 + 2] = c;*/
-    o_encoded[offset + idx3.x * 2 + 1] = glm::sin(x);
-    o_encoded[offset + idx3.x * 2 + 2] = glm::cos(x);
+        output[base] = input[elem];
+    float x = freqs[freq] * input[elem];
+    float s, c;
+    __sincosf(x, &s, &c);
+    output[base + inChns * (freq * 2 + 1)] = s;
+    output[base + inChns * (freq * 2 + 2)] = c;
 }
 
-void Encoder::encode(sptr<CudaArray<float>> o_encoded, sptr<CudaArray<glm::vec3>> input)
+void Encoder::encode(sptr<CudaArray<float>> output, sptr<CudaArray<float>> input)
 {
-    dim3 blockSize(_multires, 1024 / _multires);
-    dim3 gridSize(1, (uint)ceil(input->n() / (float)blockSize.y));
-    cu_encode<<<gridSize, blockSize>>>((glm::vec3 *)o_encoded->getBuffer(),
-                                       *input, *_freqs, input->n());
+    dim3 blkSize(1024 / _chns / _multires, _chns, _multires);
+    dim3 grdSize((uint)ceil(input->n() / (float)blkSize.x), 1, 1);
+    cu_encode<<<grdSize, blkSize>>>(output->getBuffer(), *input, *_freqs, input->n());
     CHECK_EX(cudaGetLastError());
 }
 

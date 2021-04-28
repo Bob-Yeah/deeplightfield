@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from .modules import *
-from my import util
+from utils import sphere
 
 
 class SpherNet(nn.Module):
@@ -30,13 +30,13 @@ class SpherNet(nn.Module):
         """
         rays -> colors
 
-        :param rays_o ```Tensor(B, ..., 3)```: rays' origin
-        :param rays_d ```Tensor(B, ..., 3)```: rays' direction
+        :param rays_o `Tensor(B, ..., 3)`: rays' origin
+        :param rays_d `Tensor(B, ..., 3)`: rays' direction
         :return: Tensor(B, 1|3, ...), inferred images/pixels
        """
         p = rays_o.view(-1, 3)
         v = rays_d.view(-1, 3)
-        spher = util.CartesianToSpherical(v)[..., 1:3]  # (..., 2)
+        spher = sphere.cartesian2spherical(v)[..., 1:3]  # (..., 2)
         input = torch.cat([p, spher], dim=-1) if self.in_chns == 5 else spher
 
         c: torch.Tensor = self.net(self.input_encoder(input))

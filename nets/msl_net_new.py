@@ -1,18 +1,18 @@
 import torch
 import torch.nn as nn
 from .modules import *
-from my import color_mode
-from my.simple_perf import SimplePerf
+from utils import color
+from utils.perf import Perf
 
 
 class NewMslNet(nn.Module):
 
     def __init__(self, fc_params, sampler_params,
-                 normalize_coord: bool,
-                 dir_as_input: bool,
+                 normalize_coord: bool = False,
+                 dir_as_input: bool = False,
                  n_nets: int = 2,
                  not_same_net: bool = False,
-                 color: int = color_mode.RGB,
+                 c: int = color.RGB,
                  encode_to_dim: int = 0,
                  export_mode: bool = False):
         """
@@ -21,7 +21,7 @@ class NewMslNet(nn.Module):
         :param fc_params: parameters for full-connection network
         :param sampler_params: parameters for sampler
         :param normalize_coord: whether normalize the spherical coords to [0, 2pi] before encode
-        :param color: color mode
+        :param c: color mode
         :param encode_to_dim: encode input to number of dimensions
         """
         super().__init__()
@@ -29,7 +29,7 @@ class NewMslNet(nn.Module):
         self.input_encoder = InputEncoder.Get(
             encode_to_dim, self.in_chns)
         fc_params['in_chns'] = self.input_encoder.out_dim
-        fc_params['out_chns'] = 2 if color == color_mode.GRAY else 4
+        fc_params['out_chns'] = 2 if c == color.GRAY else 4
         self.sampler = Sampler(**sampler_params)
         self.rendering = Rendering()
         self.export_mode = export_mode
@@ -78,9 +78,9 @@ class NewMslNet(nn.Module):
         """
         rays -> colors
 
-        :param rays_o ```Tensor(B, 3)```: rays' origin
-        :param rays_d ```Tensor(B, 3)```: rays' direction
-        :return: ```Tensor(B, C)``, inferred images/pixels
+        :param rays_o `Tensor(B, 3)`: rays' origin
+        :param rays_d `Tensor(B, 3)`: rays' direction
+        :return: `Tensor(B, C)``, inferred images/pixels
         """
         raw, depths = self.sample_and_infer(rays_o, rays_d, sampler)
         if self.export_mode:

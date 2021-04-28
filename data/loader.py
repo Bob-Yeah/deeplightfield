@@ -1,6 +1,6 @@
 import torch
 import math
-from my import device
+from utils import device
 
 
 class FastDataLoader(object):
@@ -9,8 +9,8 @@ class FastDataLoader(object):
 
         def __init__(self, dataset, batch_size, shuffle, drop_last) -> None:
             super().__init__()
-            self.indices = torch.randperm(len(dataset), device=device.GetDevice()) \
-                if shuffle else torch.arange(len(dataset), device=device.GetDevice())
+            self.indices = torch.randperm(len(dataset), device=device.default()) \
+                if shuffle else torch.arange(len(dataset), device=device.default())
             self.offset = 0
             self.batch_size = batch_size
             self.dataset = dataset
@@ -23,7 +23,7 @@ class FastDataLoader(object):
             self.offset += self.batch_size
             return self.dataset[indices]
 
-    def __init__(self, dataset, batch_size, shuffle, drop_last, **kwargs) -> None:
+    def __init__(self, dataset, batch_size, shuffle, drop_last=False, **kwargs) -> None:
         super().__init__()
         self.dataset = dataset
         self.batch_size = batch_size

@@ -1,4 +1,3 @@
-import sys
 import os
 import argparse
 import torch
@@ -10,8 +9,6 @@ import plotly.express as px
 import pandas as pd
 from dash.dependencies import Input, Output
 
-#sys.path.append(os.path.abspath(sys.path[0] + '/../'))
-#__package__ = "deep_view_syn"
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -24,13 +21,13 @@ if __name__ == '__main__':
     print("Set CUDA:%d as current device." % torch.cuda.current_device())
 torch.autograd.set_grad_enabled(False)
 
+
 from data.spherical_view_syn import *
 from configs.spherical_view_syn import SphericalViewSynConfig
-from my import netio
-from my import util
-from my import device
-from my import view
-from my.gen_final import GenFinal
+from utils import netio
+from utils import device
+from utils import view
+from utils import img
 from nets.modules import Sampler
 
 
@@ -49,8 +46,8 @@ def load_net(path):
     config = SphericalViewSynConfig()
     config.from_id(net_config)
     config.SAMPLE_PARAMS['perturb_sample'] = False
-    net = config.create_net().to(device.GetDevice())
-    netio.LoadNet(path, net)
+    net = config.create_net().to(device.default())
+    netio.load(path, net)
     return net
 
 
@@ -65,9 +62,9 @@ def load_views(data_desc_file) -> view.Trans:
     with open(datadir + data_desc_file, 'r', encoding='utf-8') as file:
         data_desc = json.loads(file.read())
         view_centers = torch.tensor(
-            data_desc['view_centers'], device=device.GetDevice()).view(-1, 3)
+            data_desc['view_centers'], device=device.default()).view(-1, 3)
         view_rots = torch.tensor(
-            data_desc['view_rots'], device=device.GetDevice()).view(-1, 3, 3)
+            data_desc['view_rots'], device=device.default()).view(-1, 3, 3)
         return view.Trans(view_centers, view_rots)
 
 
@@ -76,7 +73,7 @@ cam = view.CameraParam({
     'cx': 0.5,
     'cy': 0.5,
     'normalized': True
-}, res, device=device.GetDevice())
+}, res, device=device.default())
 net = load_net(net_path)
 sampler = Sampler(depth_range=(1, 50), n_samples=32, perturb_sample=False,
                   spherical=True, lindisp=True, inverse_r=True)
@@ -98,7 +95,7 @@ styles = {
         'overflowX': 'scroll'
     }
 }
-fig = px.imshow(util.Tensor2MatImg(image))
+fig = px.imshow(img.torch2np(image))
 fig1 = px.scatter(x=[0, 1, 2], y=[2, 0, 1])
 fig2 = px.scatter(x=[0, 1, 2], y=[2, 0, 1])
 app = dash.Dash(__name__, external_stylesheets=[
@@ -139,10 +136,10 @@ def raw2color(raw: torch.Tensor, z_vals: torch.Tensor):
     """
     Raw value inferred from model to color and alpha
 
-    :param raw ```Tensor(N.rays, N.samples, 2|4)```: model's output
-    :param z_vals ```Tensor(N.rays, N.samples)```: integration time
-    :return ```Tensor(N.rays, N.samples, 1|3)```: color
-    :return ```Tensor(N.rays, N.samples)```: alpha
+    :param raw `Tensor(N.rays, N.samples, 2|4)`: model's output
+    :param z_vals `Tensor(N.rays, N.samples)`: integration time
+    :return `Tensor(N.rays, N.samples, 1|3)`: color
+    :return `Tensor(N.rays, N.samples)`: alpha
     """
 
     # Compute 'distance' (in time) between each integration time along a ray.
@@ -163,7 +160,7 @@ def raw2color(raw: torch.Tensor, z_vals: torch.Tensor):
 
 def draw_scatter():
     global fig1, fig2
-    p = torch.tensor([x, y], device=device.GetDevice())
+    p = torch.tensor([x, y], device=device.default())
     ray_d = test_view.trans_vector(cam.unproj(p))
     ray_o = test_view.t
     raw, depths = net.sample_and_infer(ray_o, ray_d, sampler=sampler)

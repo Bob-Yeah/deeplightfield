@@ -8,7 +8,7 @@ import torch.backends.cudnn as cudnn
 import torchvision
 
 from .model import Net
-from my.progress_bar import progress_bar
+from utils.progress_bar import progress_bar
 
 
 class SubPixelTrainer(object):
